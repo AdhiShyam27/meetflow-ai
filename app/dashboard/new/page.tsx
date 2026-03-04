@@ -296,52 +296,64 @@ function NewMeetingPage() {
             ]);
             setInterimText("");
 
-            // Auto-detect language + translate if needed
-            fetch("/api/translate", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ text }),
-            })
-              .then((r) => r.json())
-              .then(({ translated, wasTranslated, detectedLanguage, languageCode }) => {
-                // Update transcript line with translation + detected language
-                setTranscript((prev) =>
-                  prev.map((line) =>
-                    line.id === lineId
-                      ? {
-                          ...line,
-                          ...(wasTranslated && translated && translated !== text
-                            ? { text: translated, originalText: text, translated: true }
-                            : {}),
-                          detectedLanguage: detectedLanguage ?? "English",
-                        }
-                      : line
-                  )
-                );
-
-                // Track language frequency for analytics
-                if (detectedLanguage) {
-                  setDetectedLanguages((prev) => ({
-                    ...prev,
-                    [detectedLanguage]: (prev[detectedLanguage] ?? 0) + 1,
-                  }));
-                }
-
-                // Option D: Switch speech recognition to detected language for better accuracy
-                if (languageCode && languageCode !== currentRecogLangRef.current) {
-                  currentRecogLangRef.current = languageCode;
-                  setCurrentRecogLang(languageCode);
-                  // Restart recognition with the new language
-                  if (recognitionRef.current && phaseRef.current === "recording") {
-                    try {
-                      recognitionRef.current.abort();
-                      recognitionRef.current.lang = languageCode;
-                      recognitionRef.current.start();
-                    } catch { /* ignore */ }
-                  }
-                }
+            // Auto-detect language + translate if needed.
+            // Fast path: pure ASCII text is always English — skip the API entirely.
+            const isPureAscii = /^[\x00-\x7F]*$/.test(text);
+            if (isPureAscii) {
+              setTranscript((prev) =>
+                prev.map((line) =>
+                  line.id === lineId ? { ...line, detectedLanguage: "English" } : line
+                )
+              );
+              setDetectedLanguages((prev) => ({
+                ...prev,
+                English: (prev.English ?? 0) + 1,
+              }));
+            } else {
+              // Non-ASCII text (Hindi, Arabic, Chinese, etc.) — call the translation API
+              fetch("/api/translate", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text }),
               })
-              .catch(() => {}); // silently keep original on error
+                .then((r) => r.json())
+                .then(({ translated, wasTranslated, detectedLanguage, languageCode }) => {
+                  setTranscript((prev) =>
+                    prev.map((line) =>
+                      line.id === lineId
+                        ? {
+                            ...line,
+                            ...(wasTranslated && translated && translated !== text
+                              ? { text: translated, originalText: text, translated: true }
+                              : {}),
+                            detectedLanguage: detectedLanguage ?? "English",
+                          }
+                        : line
+                    )
+                  );
+
+                  if (detectedLanguage) {
+                    setDetectedLanguages((prev) => ({
+                      ...prev,
+                      [detectedLanguage]: (prev[detectedLanguage] ?? 0) + 1,
+                    }));
+                  }
+
+                  // Switch speech recognition to detected language for better accuracy
+                  if (languageCode && languageCode !== currentRecogLangRef.current) {
+                    currentRecogLangRef.current = languageCode;
+                    setCurrentRecogLang(languageCode);
+                    if (recognitionRef.current && phaseRef.current === "recording") {
+                      try {
+                        recognitionRef.current.abort();
+                        recognitionRef.current.lang = languageCode;
+                        recognitionRef.current.start();
+                      } catch { /* ignore */ }
+                    }
+                  }
+                })
+                .catch(() => {}); // silently keep original on error
+            }
           }
         } else {
           interim += result[0].transcript;

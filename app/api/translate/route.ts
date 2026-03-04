@@ -2,10 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { rateLimit } from "@/lib/rate-limiter";
 
-const isDemoMode =
-  !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  process.env.NEXT_PUBLIC_SUPABASE_URL === "https://your-project.supabase.co";
-
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // BCP-47 codes so the recording page can switch speech recognition language
@@ -26,31 +22,18 @@ const LANG_TO_CODE: Record<string, string> = {
 const FALLBACK = { translated: "", wasTranslated: false, detectedLanguage: "English", languageCode: "en-US" };
 
 export async function POST(request: NextRequest) {
-  // ── Authentication ────────────────────────────────────────────────────────
-  let userId: string | null = null;
-
-  if (!isDemoMode) {
-    const { createClient } = await import("@/lib/supabase/server");
-    const supabase = await createClient();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    userId = user.id;
-  }
-
-  // ── Rate limiting: 120 requests / minute per user (2/sec — enough for live speech) ──
-  if (userId) {
-    const rl = rateLimit(`translate:${userId}`, 120, 60_000);
-    if (!rl.allowed) {
-      return NextResponse.json(
-        { error: "Rate limit exceeded" },
-        { status: 429, headers: { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
-      );
-    }
+  // ── Rate limiting by IP — no Supabase round-trip needed on the hot path ──
+  // Only non-ASCII text reaches this route (ASCII is short-circuited client-side).
+  const ip =
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    request.headers.get("x-real-ip") ??
+    "unknown";
+  const rl = rateLimit(`translate:${ip}`, 120, 60_000);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "Rate limit exceeded" },
+      { status: 429, headers: { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+    );
   }
 
   const body = await request.json();
