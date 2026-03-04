@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Mic, Square, Sparkles, Loader2,
-  Globe, Copy, Check, ArrowLeft, Calendar,
+  Copy, Check, ArrowLeft, Calendar,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -16,9 +16,6 @@ interface TranscriptLine {
   speaker: string;
   speakerColor: string;
   text: string;
-  originalText?: string;       // set when translated
-  translated?: boolean;
-  detectedLanguage?: string;   // e.g. "Spanish"
   isFinal: boolean;
   timestamp: number;
 }
@@ -46,7 +43,6 @@ const SPEAKERS = [
   { name: "Speaker 3", color: "#F59E0B" },
   { name: "Speaker 4", color: "#8B5CF6" },
 ];
-
 
 const MOCK_SUMMARY: AISummary = {
   overview:
@@ -141,10 +137,6 @@ function NewMeetingPage() {
   const [copied, setCopied] = useState(false);
   const [savedMeetingId, setSavedMeetingId] = useState<string | null>(null);
 
-  // Language tracking (Option B analytics)
-  const [detectedLanguages, setDetectedLanguages] = useState<Record<string, number>>({}); // { Spanish: 3, Hindi: 1 }
-  const [currentRecogLang, setCurrentRecogLang] = useState("en-US");
-
   // Refs
   const recognitionRef = useRef<ISpeechRecognition | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -155,7 +147,6 @@ function NewMeetingPage() {
   const lineIdRef = useRef(0);
   const meetingIdRef = useRef<string | null>(null);
   const phaseRef = useRef<"setup" | "recording" | "processing" | "done">("setup");
-  const currentRecogLangRef = useRef("en-US");
 
   const currentSpeaker = SPEAKERS[currentSpeakerIdx];
 
@@ -269,7 +260,7 @@ function NewMeetingPage() {
     const recognition = new SpeechRecognitionAPI();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = navigator.language || "en-US"; // use browser's language for best recognition
+    recognition.lang = "en-US";
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
@@ -280,13 +271,10 @@ function NewMeetingPage() {
           const text = result[0].transcript.trim();
           if (text) {
             const sp = SPEAKERS[currentSpeakerIdx];
-            const lineId = String(lineIdRef.current++);
-
-            // Add line immediately with original text
             setTranscript((prev) => [
               ...prev,
               {
-                id: lineId,
+                id: String(lineIdRef.current++),
                 speaker: sp.name,
                 speakerColor: sp.color,
                 text,
@@ -295,65 +283,6 @@ function NewMeetingPage() {
               },
             ]);
             setInterimText("");
-
-            // Auto-detect language + translate if needed.
-            // Fast path: pure ASCII text is always English — skip the API entirely.
-            const isPureAscii = /^[\x00-\x7F]*$/.test(text);
-            if (isPureAscii) {
-              setTranscript((prev) =>
-                prev.map((line) =>
-                  line.id === lineId ? { ...line, detectedLanguage: "English" } : line
-                )
-              );
-              setDetectedLanguages((prev) => ({
-                ...prev,
-                English: (prev.English ?? 0) + 1,
-              }));
-            } else {
-              // Non-ASCII text (Hindi, Arabic, Chinese, etc.) — call the translation API
-              fetch("/api/translate", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text }),
-              })
-                .then((r) => r.json())
-                .then(({ translated, wasTranslated, detectedLanguage, languageCode }) => {
-                  setTranscript((prev) =>
-                    prev.map((line) =>
-                      line.id === lineId
-                        ? {
-                            ...line,
-                            ...(wasTranslated && translated && translated !== text
-                              ? { text: translated, originalText: text, translated: true }
-                              : {}),
-                            detectedLanguage: detectedLanguage ?? "English",
-                          }
-                        : line
-                    )
-                  );
-
-                  if (detectedLanguage) {
-                    setDetectedLanguages((prev) => ({
-                      ...prev,
-                      [detectedLanguage]: (prev[detectedLanguage] ?? 0) + 1,
-                    }));
-                  }
-
-                  // Switch speech recognition to detected language for better accuracy
-                  if (languageCode && languageCode !== currentRecogLangRef.current) {
-                    currentRecogLangRef.current = languageCode;
-                    setCurrentRecogLang(languageCode);
-                    if (recognitionRef.current && phaseRef.current === "recording") {
-                      try {
-                        recognitionRef.current.abort();
-                        recognitionRef.current.lang = languageCode;
-                        recognitionRef.current.start();
-                      } catch { /* ignore */ }
-                    }
-                  }
-                })
-                .catch(() => {}); // silently keep original on error
-            }
           }
         } else {
           interim += result[0].transcript;
@@ -404,7 +333,7 @@ function NewMeetingPage() {
     } catch {
       toast.error("Could not start recognition. Check microphone permissions.");
     }
-  }, [title, platform, currentSpeakerIdx, recordingSeconds, phase, startWaveform]);
+  }, [title, platform, currentSpeakerIdx, recordingSeconds, startWaveform]);
 
   // Stop + summarize
   const stopAndSummarize = useCallback(async () => {
@@ -424,7 +353,6 @@ function NewMeetingPage() {
       let id = meetingIdRef.current;
 
       if (!id) {
-        // Fallback: create the meeting now if it wasn't created at start
         const createRes = await fetch("/api/meetings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -458,15 +386,12 @@ function NewMeetingPage() {
             summary: resolvedSummary,
             duration: recordingSeconds,
             status: "done",
-            detected_languages: Object.keys(detectedLanguages),
-            primary_language: Object.entries(detectedLanguages).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "English",
           }),
         });
 
         setSavedMeetingId(id);
         meetingIdRef.current = id;
       } else {
-        // No DB — just show summary inline
         const aiSummary = await fetch("/api/summarize", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -580,12 +505,6 @@ function NewMeetingPage() {
             </div>
           </div>
 
-          {/* Auto-translate badge */}
-          <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-50 border border-indigo-100 text-xs text-indigo-700">
-            <Globe className="w-4 h-4 flex-shrink-0" />
-            <span><strong>Any language supported</strong> — speech is automatically detected and translated to English in real time.</span>
-          </div>
-
           {/* Info card */}
           <div className="rounded-2xl p-4 flex gap-3" style={{ background: "#EEF2FF", border: "1px solid #C7D2FE" }}>
             <Mic className="w-5 h-5 text-indigo-600 mt-0.5 flex-shrink-0" />
@@ -627,14 +546,7 @@ function NewMeetingPage() {
             />
             <div>
               <p className="text-slate-800 font-semibold text-sm">{title}</p>
-              <p className="text-slate-400 text-xs">
-              {platform.label} · {formatTime(recordingSeconds)}
-              {currentRecogLang !== "en-US" && (
-                <span className="ml-2 text-indigo-500 font-medium">
-                  🌐 {Object.entries(detectedLanguages).sort((a, b) => b[1] - a[1])[0]?.[0]}
-                </span>
-              )}
-            </p>
+              <p className="text-slate-400 text-xs">{platform.label} · {formatTime(recordingSeconds)}</p>
             </div>
           </div>
 
@@ -696,20 +608,10 @@ function NewMeetingPage() {
                   {line.speaker[0]}
                 </div>
                 <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <p className="text-xs font-semibold" style={{ color: line.speakerColor }}>
-                      {line.speaker}
-                    </p>
-                    {line.translated && (
-                      <span className="text-xs text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full font-medium">
-                        🌐 {line.detectedLanguage ? `Translated from ${line.detectedLanguage}` : "Translated to English"}
-                      </span>
-                    )}
-                  </div>
+                  <p className="text-xs font-semibold mb-0.5" style={{ color: line.speakerColor }}>
+                    {line.speaker}
+                  </p>
                   <p className="text-slate-700 text-sm leading-relaxed">{line.text}</p>
-                  {line.originalText && (
-                    <p className="text-slate-400 text-xs mt-0.5 italic">{line.originalText}</p>
-                  )}
                 </div>
               </motion.div>
             ))}
@@ -826,20 +728,10 @@ function NewMeetingPage() {
                 {line.speaker[0]}
               </div>
               <div className="flex-1">
-                <div className="flex items-center gap-2 mb-0.5">
-                  <p className="text-xs font-semibold" style={{ color: line.speakerColor }}>
-                    {line.speaker}
-                  </p>
-                  {line.translated && (
-                    <span className="text-xs text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full font-medium">
-                      🌐 Translated
-                    </span>
-                  )}
-                </div>
+                <p className="text-xs font-semibold mb-0.5" style={{ color: line.speakerColor }}>
+                  {line.speaker}
+                </p>
                 <p className="text-slate-700 text-sm leading-relaxed">{line.text}</p>
-                {line.originalText && (
-                  <p className="text-slate-400 text-xs mt-0.5 italic">{line.originalText}</p>
-                )}
               </div>
             </div>
           ))}

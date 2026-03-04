@@ -4,9 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Mic2, Clock, FileText, Sparkles, Plus, Search,
+  Mic2, Clock, Sparkles, Plus, Search,
   MoreHorizontal, Calendar, ChevronRight, Zap, Trash2,
-  ExternalLink, Radio, Globe,
+  ExternalLink, Radio,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -20,8 +20,6 @@ interface Meeting {
   created_at: string;
   transcript?: string;
   summary?: Record<string, unknown> | null;
-  detected_languages?: string[];
-  primary_language?: string;
 }
 
 interface CalendarEvent {
@@ -172,16 +170,6 @@ export default function DashboardPage() {
     return s + words;
   }, 0);
 
-  // Language analytics across all meetings
-  const langCount: Record<string, number> = {};
-  meetings.forEach((m) => {
-    (m.detected_languages ?? []).forEach((lang) => {
-      langCount[lang] = (langCount[lang] ?? 0) + 1;
-    });
-  });
-  const uniqueLangs = Object.keys(langCount).length;
-  const topLang = Object.entries(langCount).sort((a, b) => b[1] - a[1])[0]?.[0];
-
   const stats = [
     {
       label: "Total Meetings",
@@ -202,11 +190,10 @@ export default function DashboardPage() {
       color: "#F59E0B",
     },
     {
-      label: uniqueLangs > 1 ? `${uniqueLangs} Languages` : (topLang ?? "English"),
-      value: uniqueLangs > 0 ? uniqueLangs : "—",
-      icon: <Globe className="w-4 h-4" />,
+      label: "Words Transcribed",
+      value: totalWords > 0 ? `${(totalWords / 1000).toFixed(1)}k` : "0",
+      icon: <Sparkles className="w-4 h-4" />,
       color: "#14B8A6",
-      subtitle: topLang && uniqueLangs > 1 ? `Most: ${topLang}` : undefined,
     },
   ];
 
@@ -282,9 +269,6 @@ export default function DashboardPage() {
               {stat.value}
             </p>
             <p className="text-slate-400 text-xs mt-0.5">{stat.label}</p>
-            {"subtitle" in stat && stat.subtitle && (
-              <p className="text-xs font-medium mt-0.5" style={{ color: stat.color }}>{stat.subtitle}</p>
-            )}
           </motion.div>
         ))}
       </div>
@@ -436,11 +420,6 @@ export default function DashboardPage() {
                         {meeting.summary && (
                           <span className="flex items-center gap-0.5 text-xs text-teal-600 font-medium bg-teal-50 px-1.5 py-0.5 rounded-full flex-shrink-0">
                             <Sparkles className="w-3 h-3" /> AI Summary
-                          </span>
-                        )}
-                        {meeting.primary_language && meeting.primary_language !== "English" && (
-                          <span className="flex items-center gap-0.5 text-xs text-indigo-600 font-medium bg-indigo-50 px-1.5 py-0.5 rounded-full flex-shrink-0">
-                            <Globe className="w-3 h-3" /> {meeting.primary_language}
                           </span>
                         )}
                       </div>
