@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { rateLimit } from "@/lib/rate-limiter";
+
+const isDemoMode =
+  !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL === "https://your-project.supabase.co";
 
 const MOCK_SUMMARY = {
   overview:
@@ -21,8 +26,45 @@ const MOCK_SUMMARY = {
 };
 
 export async function POST(req: NextRequest) {
+  // ── Authentication ────────────────────────────────────────────────────────
+  let userId: string | null = null;
+
+  if (!isDemoMode) {
+    const { createClient } = await import("@/lib/supabase/server");
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    userId = user.id;
+  }
+
+  // ── Rate limiting: 20 summaries / minute per user ─────────────────────────
+  if (userId) {
+    const rl = rateLimit(`summarize:${userId}`, 20, 60_000);
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: "Too many requests. Please wait before generating another summary." },
+        { status: 429, headers: { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+      );
+    }
+  }
+
   try {
-    const { transcript, meetingTitle } = await req.json();
+    const body = await req.json();
+    const transcript: unknown = body?.transcript;
+    const meetingTitle: unknown = body?.meetingTitle;
+
+    // ── Input validation ──────────────────────────────────────────────────────
+    if (typeof transcript !== "string" || typeof meetingTitle !== "string" && meetingTitle !== undefined) {
+      return NextResponse.json({ error: "Invalid input" }, { status: 400 });
+    }
+
+    // Clamp title to 200 chars
+    const safeTitle = String(meetingTitle ?? "Meeting").slice(0, 200);
 
     if (!transcript || transcript.trim().length < 20) {
       return NextResponse.json({ summary: MOCK_SUMMARY });
@@ -32,7 +74,7 @@ export async function POST(req: NextRequest) {
 
     if (!apiKey || apiKey === "sk-ant-your-key-here") {
       // Return mock summary in demo mode
-      await new Promise((r) => setTimeout(r, 1200)); // simulate latency
+      await new Promise((r) => setTimeout(r, 1200));
       return NextResponse.json({ summary: MOCK_SUMMARY });
     }
 
@@ -48,7 +90,7 @@ export async function POST(req: NextRequest) {
           role: "user",
           content: `You are an expert meeting analyst. Analyze this meeting transcript and extract structured insights.
 
-Meeting Title: ${meetingTitle || "Meeting"}
+Meeting Title: ${safeTitle}
 
 Transcript:
 ${transcript.slice(0, 8000)}
@@ -74,9 +116,17 @@ Be concise and actionable. Return only the JSON object with no other text.`,
       return NextResponse.json({ summary: MOCK_SUMMARY });
     }
 
-    // Strip any markdown fences
+    // Strip any markdown fences and parse safely
     const raw = content.text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const summary = JSON.parse(raw);
+
+    let summary: unknown;
+    try {
+      summary = JSON.parse(raw);
+    } catch {
+      // Claude returned non-JSON — fall back to mock
+      console.error("[/api/summarize] Claude returned non-JSON:", raw.slice(0, 200));
+      return NextResponse.json({ summary: MOCK_SUMMARY });
+    }
 
     return NextResponse.json({ summary });
   } catch (err) {

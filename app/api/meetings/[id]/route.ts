@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { encrypt, decrypt } from "@/lib/encryption";
 
 const isDemoMode =
   !process.env.NEXT_PUBLIC_SUPABASE_URL ||
@@ -34,6 +35,11 @@ export async function GET(
 
     if (error || !data) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+    // Decrypt transcript before sending to client
+    if (data.transcript) {
+      data.transcript = decrypt(data.transcript, user.id);
+    }
+
     return NextResponse.json(data);
   } catch (err) {
     console.error("[GET /api/meetings/:id]", err);
@@ -64,14 +70,37 @@ export async function PATCH(
 
     const body = await req.json();
 
+    // ── Input validation ────────────────────────────────────────────────────
+    // Prevent excessively large payloads from being stored
+    const MAX_TITLE = 300;
+    const MAX_TRANSCRIPT = 200_000; // ~200KB plain text
+    const MAX_SUMMARY = 50_000;    // ~50KB JSON
+    const MAX_LANG = 100;
+
+    if (body.title !== undefined && (typeof body.title !== "string" || body.title.length > MAX_TITLE)) {
+      return NextResponse.json({ error: "Invalid title" }, { status: 400 });
+    }
+    if (body.transcript !== undefined && (typeof body.transcript !== "string" || body.transcript.length > MAX_TRANSCRIPT)) {
+      return NextResponse.json({ error: "Transcript too large" }, { status: 400 });
+    }
+    if (body.summary !== undefined && typeof body.summary !== "object") {
+      return NextResponse.json({ error: "Invalid summary" }, { status: 400 });
+    }
+    if (body.primary_language !== undefined && (typeof body.primary_language !== "string" || body.primary_language.length > MAX_LANG)) {
+      return NextResponse.json({ error: "Invalid language" }, { status: 400 });
+    }
+
     const { data, error } = await supabase
       .from("meetings")
       .update({
         ...(body.title !== undefined && { title: body.title }),
-        ...(body.transcript !== undefined && { transcript: body.transcript }),
+        // Encrypt transcript at rest before writing to DB
+        ...(body.transcript !== undefined && { transcript: encrypt(body.transcript, user.id) }),
         ...(body.summary !== undefined && { summary: body.summary }),
         ...(body.status !== undefined && { status: body.status }),
         ...(body.duration !== undefined && { duration: body.duration }),
+        ...(body.detected_languages !== undefined && { detected_languages: body.detected_languages }),
+        ...(body.primary_language !== undefined && { primary_language: body.primary_language }),
       })
       .eq("id", id)
       .eq("user_id", user.id)
@@ -79,6 +108,11 @@ export async function PATCH(
       .single();
 
     if (error) throw error;
+
+    // Return decrypted transcript to client
+    if (data?.transcript) {
+      data.transcript = decrypt(data.transcript, user.id);
+    }
 
     return NextResponse.json(data);
   } catch (err) {

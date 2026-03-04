@@ -2,6 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { getValidGoogleToken } from "@/lib/google/client";
+import { rateLimit } from "@/lib/rate-limiter";
+
+// Escape special HTML characters to prevent XSS in generated emails
+function esc(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 function buildEmailHtml(meeting: {
   title: string;
@@ -17,25 +28,25 @@ function buildEmailHtml(meeting: {
   const sections: string[] = [];
 
   if (s.overview) {
-    sections.push(`<h2 style="color:#4F46E5;font-size:16px;margin:20px 0 8px">Overview</h2><p style="color:#374151;line-height:1.6">${s.overview}</p>`);
+    sections.push(`<h2 style="color:#4F46E5;font-size:16px;margin:20px 0 8px">Overview</h2><p style="color:#374151;line-height:1.6">${esc(s.overview)}</p>`);
   }
   if (s.keyPoints?.length) {
-    sections.push(`<h2 style="color:#4F46E5;font-size:16px;margin:20px 0 8px">Key Points</h2><ul style="color:#374151;padding-left:20px">${s.keyPoints.map((k) => `<li style="margin-bottom:6px">${k}</li>`).join("")}</ul>`);
+    sections.push(`<h2 style="color:#4F46E5;font-size:16px;margin:20px 0 8px">Key Points</h2><ul style="color:#374151;padding-left:20px">${s.keyPoints.map((k) => `<li style="margin-bottom:6px">${esc(k)}</li>`).join("")}</ul>`);
   }
   if (s.actionItems?.length) {
-    sections.push(`<h2 style="color:#4F46E5;font-size:16px;margin:20px 0 8px">✅ Action Items</h2><ul style="color:#374151;padding-left:20px">${s.actionItems.map((a) => `<li style="margin-bottom:6px"><strong>${a.task}</strong>${a.owner ? ` — ${a.owner}` : ""}${a.dueDate ? ` (${a.dueDate})` : ""}</li>`).join("")}</ul>`);
+    sections.push(`<h2 style="color:#4F46E5;font-size:16px;margin:20px 0 8px">✅ Action Items</h2><ul style="color:#374151;padding-left:20px">${s.actionItems.map((a) => `<li style="margin-bottom:6px"><strong>${esc(a.task)}</strong>${a.owner ? ` — ${esc(a.owner)}` : ""}${a.dueDate ? ` (${esc(a.dueDate)})` : ""}</li>`).join("")}</ul>`);
   }
   if (s.decisions?.length) {
-    sections.push(`<h2 style="color:#14B8A6;font-size:16px;margin:20px 0 8px">🔖 Decisions</h2><ul style="color:#374151;padding-left:20px">${s.decisions.map((d) => `<li style="margin-bottom:6px">${d}</li>`).join("")}</ul>`);
+    sections.push(`<h2 style="color:#14B8A6;font-size:16px;margin:20px 0 8px">🔖 Decisions</h2><ul style="color:#374151;padding-left:20px">${s.decisions.map((d) => `<li style="margin-bottom:6px">${esc(d)}</li>`).join("")}</ul>`);
   }
   if (s.questions?.length) {
-    sections.push(`<h2 style="color:#F59E0B;font-size:16px;margin:20px 0 8px">❓ Open Questions</h2><ul style="color:#374151;padding-left:20px">${s.questions.map((q) => `<li style="margin-bottom:6px">${q}</li>`).join("")}</ul>`);
+    sections.push(`<h2 style="color:#F59E0B;font-size:16px;margin:20px 0 8px">❓ Open Questions</h2><ul style="color:#374151;padding-left:20px">${s.questions.map((q) => `<li style="margin-bottom:6px">${esc(q)}</li>`).join("")}</ul>`);
   }
 
   return `<!DOCTYPE html><html><body style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;padding:24px">
     <div style="background:linear-gradient(135deg,#4F46E5,#14B8A6);padding:24px;border-radius:12px;margin-bottom:24px">
       <h1 style="color:white;margin:0;font-size:22px">📋 Meeting Summary</h1>
-      <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:14px">${meeting.title}</p>
+      <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:14px">${esc(meeting.title)}</p>
     </div>
     ${sections.join("")}
     <hr style="border:none;border-top:1px solid #E5E7EB;margin:28px 0">
@@ -72,8 +83,20 @@ export async function POST(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { meetingId } = await request.json();
-  if (!meetingId) return NextResponse.json({ error: "meetingId required" }, { status: 400 });
+  // Rate limit: 10 emails per hour per user
+  const rl = rateLimit(`send-summary:${user.id}`, 10, 60 * 60_000);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "Too many emails sent. Please wait before sending another." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+    );
+  }
+
+  const body = await request.json();
+  const meetingId: unknown = body?.meetingId;
+  if (!meetingId || typeof meetingId !== "string") {
+    return NextResponse.json({ error: "meetingId required" }, { status: 400 });
+  }
 
   // Load meeting + user's google email
   const [{ data: meeting }, { data: profile }] = await Promise.all([

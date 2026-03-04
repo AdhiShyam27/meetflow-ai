@@ -7,6 +7,7 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
   const error = searchParams.get("error");
+  const state = searchParams.get("state");
 
   if (error || !code) {
     return NextResponse.redirect(`${origin}/dashboard/settings?google=error`);
@@ -14,6 +15,15 @@ export async function GET(request: NextRequest) {
 
   // Get current user
   const cookieStore = await cookies();
+
+  // ── CSRF state validation ─────────────────────────────────────────────────
+  const expectedState = cookieStore.get("google_oauth_state")?.value;
+  if (!state || !expectedState || state !== expectedState) {
+    console.error("[Google OAuth] CSRF state mismatch — possible CSRF attack");
+    return NextResponse.redirect(`${origin}/dashboard/settings?google=error`);
+  }
+  // Invalidate the one-time state cookie immediately
+  cookieStore.delete("google_oauth_state");
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -49,10 +59,19 @@ export async function GET(request: NextRequest) {
 
   const tokens = await tokenRes.json();
 
+  // Google only provides refresh_token on first auth or when prompt=consent is used.
+  // If it's missing, the connection won't work long-term — redirect with error.
+  if (!tokens.refresh_token) {
+    return NextResponse.redirect(`${origin}/dashboard/settings?google=error`);
+  }
+
   // Fetch the user's Gmail address
   const userInfoRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
     headers: { Authorization: `Bearer ${tokens.access_token}` },
   });
+  if (!userInfoRes.ok) {
+    return NextResponse.redirect(`${origin}/dashboard/settings?google=error`);
+  }
   const userInfo = await userInfoRes.json();
 
   const expiry = new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000);

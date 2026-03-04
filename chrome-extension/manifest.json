@@ -1,0 +1,74 @@
+{
+  "manifest_version": 3,
+  "name": "MeetFlow AI — Meeting Transcription",
+  "version": "1.0.0",
+  "description": "Live, bot-free AI transcription and summaries for Google Meet, Zoom, and MS Teams. Your meetings, distilled into action.",
+  "homepage_url": "https://meetflow.ai",
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "MeetFlow AI"
+  },
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://meet.google.com/*",
+        "https://zoom.us/wc/*",
+        "https://teams.microsoft.com/*",
+        "https://*.zoom.us/wc/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_end"
+    }
+  ],
+
+  "permissions": [
+    "storage",
+    "tabs",
+    "activeTab",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "https://zoom.us/*",
+    "https://teams.microsoft.com/*"
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["panel.html", "icons/*"],
+      "matches": ["https://meet.google.com/*", "https://zoom.us/*", "https://teams.microsoft.com/*"]
+    }
+  ],
+
+  "commands": {
+    "toggle-transcription": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+T",
+        "mac": "Command+Shift+T"
+      },
+      "description": "Start / Stop transcription"
+    }
+  }
+}

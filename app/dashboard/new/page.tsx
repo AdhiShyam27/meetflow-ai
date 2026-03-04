@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, Suspense } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Mic, Square, Sparkles, Loader2, ChevronDown,
+  Mic, Square, Sparkles, Loader2,
   Globe, Copy, Check, ArrowLeft, Calendar,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -16,6 +16,9 @@ interface TranscriptLine {
   speaker: string;
   speakerColor: string;
   text: string;
+  originalText?: string;       // set when translated
+  translated?: boolean;
+  detectedLanguage?: string;   // e.g. "Spanish"
   isFinal: boolean;
   timestamp: number;
 }
@@ -44,18 +47,6 @@ const SPEAKERS = [
   { name: "Speaker 4", color: "#8B5CF6" },
 ];
 
-const LANGUAGES = [
-  { code: "en-US", label: "English (US)" },
-  { code: "en-GB", label: "English (UK)" },
-  { code: "es-ES", label: "Español" },
-  { code: "fr-FR", label: "Français" },
-  { code: "de-DE", label: "Deutsch" },
-  { code: "pt-BR", label: "Português" },
-  { code: "ja-JP", label: "日本語" },
-  { code: "zh-CN", label: "中文 (简体)" },
-  { code: "ko-KR", label: "한국어" },
-  { code: "hi-IN", label: "हिन्दी" },
-];
 
 const MOCK_SUMMARY: AISummary = {
   overview:
@@ -128,15 +119,13 @@ declare global {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function NewMeetingPage() {
+function NewMeetingPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   // Setup state
   const [title, setTitle] = useState("");
   const [platform, setPlatform] = useState<typeof PLATFORMS[number]>(PLATFORMS[0]);
-  const [language, setLanguage] = useState(LANGUAGES[0]);
-  const [showLangPicker, setShowLangPicker] = useState(false);
   const [currentSpeakerIdx, setCurrentSpeakerIdx] = useState(0);
   const [fromCalendar, setFromCalendar] = useState(false);
 
@@ -152,6 +141,10 @@ export default function NewMeetingPage() {
   const [copied, setCopied] = useState(false);
   const [savedMeetingId, setSavedMeetingId] = useState<string | null>(null);
 
+  // Language tracking (Option B analytics)
+  const [detectedLanguages, setDetectedLanguages] = useState<Record<string, number>>({}); // { Spanish: 3, Hindi: 1 }
+  const [currentRecogLang, setCurrentRecogLang] = useState("en-US");
+
   // Refs
   const recognitionRef = useRef<ISpeechRecognition | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -161,22 +154,44 @@ export default function NewMeetingPage() {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const lineIdRef = useRef(0);
   const meetingIdRef = useRef<string | null>(null);
+  const phaseRef = useRef<"setup" | "recording" | "processing" | "done">("setup");
+  const currentRecogLangRef = useRef("en-US");
 
   const currentSpeaker = SPEAKERS[currentSpeakerIdx];
 
-  // Pre-fill from Google Calendar query params
+  // Pre-fill from Google Calendar query params (+ auto-start flag)
+  const [autoStartPending, setAutoStartPending] = useState(false);
+
   useEffect(() => {
     const calTitle = searchParams.get("title");
     const calPlatform = searchParams.get("platform");
+    const shouldAutoStart = searchParams.get("autostart") === "true";
     if (calTitle) {
       setTitle(calTitle);
       setFromCalendar(true);
+    } else {
+      setFromCalendar(false);
     }
     if (calPlatform) {
       const found = PLATFORMS.find((p) => p.id === calPlatform);
       if (found) setPlatform(found);
     }
+    if (shouldAutoStart && calTitle) {
+      setAutoStartPending(true);
+    }
   }, [searchParams]);
+
+  // Keep phaseRef in sync to avoid stale closures in recognition.onend
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
+
+  // Auto-start when navigated from "Join & Record" with title pre-filled
+  useEffect(() => {
+    if (!autoStartPending || !title.trim()) return;
+    setAutoStartPending(false);
+    const timer = setTimeout(() => startRecording(), 300);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStartPending, title]);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -254,7 +269,7 @@ export default function NewMeetingPage() {
     const recognition = new SpeechRecognitionAPI();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = language.code;
+    recognition.lang = navigator.language || "en-US"; // use browser's language for best recognition
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
@@ -265,10 +280,13 @@ export default function NewMeetingPage() {
           const text = result[0].transcript.trim();
           if (text) {
             const sp = SPEAKERS[currentSpeakerIdx];
+            const lineId = String(lineIdRef.current++);
+
+            // Add line immediately with original text
             setTranscript((prev) => [
               ...prev,
               {
-                id: String(lineIdRef.current++),
+                id: lineId,
                 speaker: sp.name,
                 speakerColor: sp.color,
                 text,
@@ -277,6 +295,53 @@ export default function NewMeetingPage() {
               },
             ]);
             setInterimText("");
+
+            // Auto-detect language + translate if needed
+            fetch("/api/translate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text }),
+            })
+              .then((r) => r.json())
+              .then(({ translated, wasTranslated, detectedLanguage, languageCode }) => {
+                // Update transcript line with translation + detected language
+                setTranscript((prev) =>
+                  prev.map((line) =>
+                    line.id === lineId
+                      ? {
+                          ...line,
+                          ...(wasTranslated && translated && translated !== text
+                            ? { text: translated, originalText: text, translated: true }
+                            : {}),
+                          detectedLanguage: detectedLanguage ?? "English",
+                        }
+                      : line
+                  )
+                );
+
+                // Track language frequency for analytics
+                if (detectedLanguage) {
+                  setDetectedLanguages((prev) => ({
+                    ...prev,
+                    [detectedLanguage]: (prev[detectedLanguage] ?? 0) + 1,
+                  }));
+                }
+
+                // Option D: Switch speech recognition to detected language for better accuracy
+                if (languageCode && languageCode !== currentRecogLangRef.current) {
+                  currentRecogLangRef.current = languageCode;
+                  setCurrentRecogLang(languageCode);
+                  // Restart recognition with the new language
+                  if (recognitionRef.current && phaseRef.current === "recording") {
+                    try {
+                      recognitionRef.current.abort();
+                      recognitionRef.current.lang = languageCode;
+                      recognitionRef.current.start();
+                    } catch { /* ignore */ }
+                  }
+                }
+              })
+              .catch(() => {}); // silently keep original on error
           }
         } else {
           interim += result[0].transcript;
@@ -287,7 +352,7 @@ export default function NewMeetingPage() {
 
     // Auto-restart on end (recognition times out after ~60s silence)
     recognition.onend = () => {
-      if (phase === "recording") {
+      if (phaseRef.current === "recording") {
         try { recognition.start(); } catch { /* already stopping */ }
       }
     };
@@ -312,7 +377,7 @@ export default function NewMeetingPage() {
           body: JSON.stringify({
             title: title.trim() || "Untitled Meeting",
             platform: platform.id,
-            language: language.code,
+            language: "en-US",
           }),
         });
         if (res.ok) {
@@ -327,7 +392,7 @@ export default function NewMeetingPage() {
     } catch {
       toast.error("Could not start recognition. Check microphone permissions.");
     }
-  }, [title, language, platform, currentSpeakerIdx, recordingSeconds, phase, startWaveform]);
+  }, [title, platform, currentSpeakerIdx, recordingSeconds, phase, startWaveform]);
 
   // Stop + summarize
   const stopAndSummarize = useCallback(async () => {
@@ -354,7 +419,7 @@ export default function NewMeetingPage() {
           body: JSON.stringify({
             title: title.trim() || "Untitled Meeting",
             platform: platform.id,
-            language: language.code,
+            language: "en-US",
           }),
         });
         if (createRes.ok) {
@@ -381,6 +446,8 @@ export default function NewMeetingPage() {
             summary: resolvedSummary,
             duration: recordingSeconds,
             status: "done",
+            detected_languages: Object.keys(detectedLanguages),
+            primary_language: Object.entries(detectedLanguages).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "English",
           }),
         });
 
@@ -401,7 +468,7 @@ export default function NewMeetingPage() {
 
     setPhase("done");
     toast.success("Summary generated!");
-  }, [transcript, title, platform, language, recordingSeconds, stopWaveform]);
+  }, [transcript, title, platform, recordingSeconds, stopWaveform]);
 
   const formatTime = (s: number) =>
     `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -413,6 +480,19 @@ export default function NewMeetingPage() {
     setTimeout(() => setCopied(false), 2000);
     toast.success("Copied to clipboard");
   };
+
+  // ── Render: Auto-start loading screen ────────────────────────────────────
+  if (autoStartPending) {
+    return (
+      <div className="p-6 max-w-2xl flex flex-col items-center justify-center min-h-[60vh] gap-4">
+        <div className="w-14 h-14 rounded-2xl bg-indigo-50 flex items-center justify-center">
+          <Loader2 className="w-7 h-7 text-indigo-500 animate-spin" />
+        </div>
+        <p className="text-slate-700 font-semibold">Connecting to microphone…</p>
+        <p className="text-slate-400 text-sm">{title}</p>
+      </div>
+    );
+  }
 
   // ── Render: Setup phase ───────────────────────────────────────────────────
   if (phase === "setup") {
@@ -488,43 +568,10 @@ export default function NewMeetingPage() {
             </div>
           </div>
 
-          {/* Language */}
-          <div>
-            <label className="block text-sm font-semibold text-slate-700 mb-2">
-              Transcription language
-            </label>
-            <div className="relative">
-              <button
-                onClick={() => setShowLangPicker(!showLangPicker)}
-                className="w-full flex items-center justify-between px-4 py-3 rounded-xl border border-slate-200 text-slate-700 text-sm hover:border-indigo-300 transition-colors"
-              >
-                <span className="flex items-center gap-2">
-                  <Globe className="w-4 h-4 text-slate-400" />
-                  {language.label}
-                </span>
-                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showLangPicker ? "rotate-180" : ""}`} />
-              </button>
-              <AnimatePresence>
-                {showLangPicker && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 4 }}
-                    className="absolute top-full mt-1.5 left-0 right-0 bg-white border border-slate-200 rounded-xl shadow-xl z-20 max-h-52 overflow-y-auto"
-                  >
-                    {LANGUAGES.map((l) => (
-                      <button
-                        key={l.code}
-                        onClick={() => { setLanguage(l); setShowLangPicker(false); }}
-                        className={`w-full text-left px-4 py-2.5 text-sm hover:bg-indigo-50 transition-colors first:rounded-t-xl last:rounded-b-xl ${language.code === l.code ? "text-indigo-600 font-medium" : "text-slate-700"}`}
-                      >
-                        {l.label}
-                      </button>
-                    ))}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
+          {/* Auto-translate badge */}
+          <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-50 border border-indigo-100 text-xs text-indigo-700">
+            <Globe className="w-4 h-4 flex-shrink-0" />
+            <span><strong>Any language supported</strong> — speech is automatically detected and translated to English in real time.</span>
           </div>
 
           {/* Info card */}
@@ -568,7 +615,14 @@ export default function NewMeetingPage() {
             />
             <div>
               <p className="text-slate-800 font-semibold text-sm">{title}</p>
-              <p className="text-slate-400 text-xs">{platform.label} · {formatTime(recordingSeconds)}</p>
+              <p className="text-slate-400 text-xs">
+              {platform.label} · {formatTime(recordingSeconds)}
+              {currentRecogLang !== "en-US" && (
+                <span className="ml-2 text-indigo-500 font-medium">
+                  🌐 {Object.entries(detectedLanguages).sort((a, b) => b[1] - a[1])[0]?.[0]}
+                </span>
+              )}
+            </p>
             </div>
           </div>
 
@@ -629,11 +683,21 @@ export default function NewMeetingPage() {
                 >
                   {line.speaker[0]}
                 </div>
-                <div>
-                  <p className="text-xs font-semibold mb-0.5" style={{ color: line.speakerColor }}>
-                    {line.speaker}
-                  </p>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <p className="text-xs font-semibold" style={{ color: line.speakerColor }}>
+                      {line.speaker}
+                    </p>
+                    {line.translated && (
+                      <span className="text-xs text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full font-medium">
+                        🌐 {line.detectedLanguage ? `Translated from ${line.detectedLanguage}` : "Translated to English"}
+                      </span>
+                    )}
+                  </div>
                   <p className="text-slate-700 text-sm leading-relaxed">{line.text}</p>
+                  {line.originalText && (
+                    <p className="text-slate-400 text-xs mt-0.5 italic">{line.originalText}</p>
+                  )}
                 </div>
               </motion.div>
             ))}
@@ -749,11 +813,21 @@ export default function NewMeetingPage() {
               >
                 {line.speaker[0]}
               </div>
-              <div>
-                <p className="text-xs font-semibold mb-0.5" style={{ color: line.speakerColor }}>
-                  {line.speaker}
-                </p>
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <p className="text-xs font-semibold" style={{ color: line.speakerColor }}>
+                    {line.speaker}
+                  </p>
+                  {line.translated && (
+                    <span className="text-xs text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded-full font-medium">
+                      🌐 Translated
+                    </span>
+                  )}
+                </div>
                 <p className="text-slate-700 text-sm leading-relaxed">{line.text}</p>
+                {line.originalText && (
+                  <p className="text-slate-400 text-xs mt-0.5 italic">{line.originalText}</p>
+                )}
               </div>
             </div>
           ))}
@@ -881,5 +955,13 @@ export default function NewMeetingPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function NewMeetingPageWrapper() {
+  return (
+    <Suspense>
+      <NewMeetingPage />
+    </Suspense>
   );
 }

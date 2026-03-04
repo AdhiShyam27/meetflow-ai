@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
+import { useEffect, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic2, Clock, FileText, Sparkles, Plus, Search,
   MoreHorizontal, Calendar, ChevronRight, Zap, Trash2,
-  ExternalLink,
+  ExternalLink, Radio, Globe,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -19,6 +20,8 @@ interface Meeting {
   created_at: string;
   transcript?: string;
   summary?: Record<string, unknown> | null;
+  detected_languages?: string[];
+  primary_language?: string;
 }
 
 interface CalendarEvent {
@@ -67,11 +70,13 @@ function formatEventTime(iso: string) {
 }
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [now, setNow] = useState(() => Date.now());
 
   const fetchMeetings = async () => {
     try {
@@ -86,14 +91,59 @@ export default function DashboardPage() {
     }
   };
 
-  useEffect(() => {
-    fetchMeetings();
-    // Fetch calendar events (only shows if Google is connected)
+  const fetchCalendar = useCallback(() => {
     fetch("/api/google/calendar")
       .then((r) => r.json())
       .then((d) => { if (d.events) setCalendarEvents(d.events); })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    fetchMeetings();
+    fetchCalendar();
+
+    // Re-fetch calendar every 60 seconds
+    const calendarInterval = setInterval(fetchCalendar, 60_000);
+    // Tick every 30 seconds so countdown badges stay accurate
+    const tickInterval = setInterval(() => setNow(Date.now()), 30_000);
+
+    return () => {
+      clearInterval(calendarInterval);
+      clearInterval(tickInterval);
+    };
+  }, [fetchCalendar]);
+
+  // Derive active + soon meetings from current time
+  const activeMeeting = calendarEvents.find((e) => {
+    const start = new Date(e.start).getTime();
+    const end = new Date(e.end).getTime();
+    return start <= now && now <= end;
+  }) ?? null;
+
+  const soonEventIds = new Set(
+    calendarEvents
+      .filter((e) => {
+        const ms = new Date(e.start).getTime() - now;
+        return ms > 0 && ms <= 5 * 60 * 1000;
+      })
+      .map((e) => e.id)
+  );
+
+  const handleJoinAndRecord = (event: CalendarEvent) => {
+    localStorage.setItem(
+      "meetflow_pending_meeting",
+      JSON.stringify({ title: event.title, platform: event.platform })
+    );
+    if (event.meetLink) {
+      window.open(event.meetLink, "_blank", "noopener,noreferrer");
+    }
+    const params = new URLSearchParams({
+      title: event.title,
+      platform: event.platform,
+      autostart: "true",
+    });
+    router.push(`/dashboard/new?${params.toString()}`);
+  };
 
   const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.preventDefault();
@@ -122,6 +172,16 @@ export default function DashboardPage() {
     return s + words;
   }, 0);
 
+  // Language analytics across all meetings
+  const langCount: Record<string, number> = {};
+  meetings.forEach((m) => {
+    (m.detected_languages ?? []).forEach((lang) => {
+      langCount[lang] = (langCount[lang] ?? 0) + 1;
+    });
+  });
+  const uniqueLangs = Object.keys(langCount).length;
+  const topLang = Object.entries(langCount).sort((a, b) => b[1] - a[1])[0]?.[0];
+
   const stats = [
     {
       label: "Total Meetings",
@@ -142,15 +202,44 @@ export default function DashboardPage() {
       color: "#F59E0B",
     },
     {
-      label: "Words Captured",
-      value: totalWords > 1000 ? `${(totalWords / 1000).toFixed(1)}K` : totalWords.toString(),
-      icon: <FileText className="w-4 h-4" />,
-      color: "#8B5CF6",
+      label: uniqueLangs > 1 ? `${uniqueLangs} Languages` : (topLang ?? "English"),
+      value: uniqueLangs > 0 ? uniqueLangs : "—",
+      icon: <Globe className="w-4 h-4" />,
+      color: "#14B8A6",
+      subtitle: topLang && uniqueLangs > 1 ? `Most: ${topLang}` : undefined,
     },
   ];
 
   return (
     <div className="p-6 max-w-6xl" style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+
+      {/* Active meeting banner */}
+      <AnimatePresence>
+        {activeMeeting && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className="mb-6 rounded-2xl px-5 py-4 flex items-center gap-4"
+            style={{ background: "linear-gradient(135deg, #DC2626, #B91C1C)", boxShadow: "0 4px 20px rgba(220,38,38,0.3)" }}
+          >
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <Radio className="w-4 h-4 text-white animate-pulse flex-shrink-0" />
+              <span className="text-white font-semibold text-sm truncate">
+                {activeMeeting.title}
+              </span>
+              <span className="text-red-200 text-xs flex-shrink-0">is live now</span>
+            </div>
+            <button
+              onClick={() => handleJoinAndRecord(activeMeeting)}
+              className="flex-shrink-0 bg-white text-red-600 font-bold text-xs px-4 py-2 rounded-xl hover:bg-red-50 transition-colors"
+            >
+              Join & Record →
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
@@ -193,6 +282,9 @@ export default function DashboardPage() {
               {stat.value}
             </p>
             <p className="text-slate-400 text-xs mt-0.5">{stat.label}</p>
+            {"subtitle" in stat && stat.subtitle && (
+              <p className="text-xs font-medium mt-0.5" style={{ color: stat.color }}>{stat.subtitle}</p>
+            )}
           </motion.div>
         ))}
       </div>
@@ -212,34 +304,45 @@ export default function DashboardPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {calendarEvents.slice(0, 6).map((event) => {
               const plt = platformLabels[event.platform] || platformLabels.other;
-              const params = new URLSearchParams({
-                title: event.title,
-                platform: event.platform,
-              });
+              const isSoon = soonEventIds.has(event.id);
+              const isActive = activeMeeting?.id === event.id;
+              const minsUntil = Math.ceil((new Date(event.start).getTime() - now) / 60_000);
               return (
                 <div
                   key={event.id}
-                  className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:border-indigo-200 hover:shadow-md transition-all"
+                  className="bg-white rounded-2xl border p-4 shadow-sm hover:shadow-md transition-all"
+                  style={{ borderColor: isActive ? "#DC2626" : isSoon ? "#F59E0B" : "#E2E8F0" }}
                 >
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <p className="text-slate-800 font-semibold text-sm leading-tight line-clamp-2">{event.title}</p>
-                    <span
-                      className="text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
-                      style={{ background: plt.bg, color: plt.color }}
-                    >
-                      {plt.label}
-                    </span>
+                    {isActive ? (
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 bg-red-100 text-red-600 animate-pulse">
+                        Live
+                      </span>
+                    ) : isSoon ? (
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 bg-amber-100 text-amber-700 animate-pulse">
+                        {minsUntil}m
+                      </span>
+                    ) : (
+                      <span
+                        className="text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                        style={{ background: plt.bg, color: plt.color }}
+                      >
+                        {plt.label}
+                      </span>
+                    )}
                   </div>
                   <p className="text-slate-400 text-xs mb-3 flex items-center gap-1">
                     <Clock className="w-3 h-3" />
                     {formatEventTime(event.start)}
                   </p>
                   <div className="flex gap-2">
-                    <Link href={`/dashboard/new?${params.toString()}`} className="flex-1">
-                      <button className="w-full text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white py-1.5 px-3 rounded-lg transition-colors">
-                        Start Recording
-                      </button>
-                    </Link>
+                    <button
+                      onClick={() => handleJoinAndRecord(event)}
+                      className="flex-1 text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white py-1.5 px-3 rounded-lg transition-colors"
+                    >
+                      Join & Record
+                    </button>
                     {event.meetLink && (
                       <a
                         href={event.meetLink}
@@ -333,6 +436,11 @@ export default function DashboardPage() {
                         {meeting.summary && (
                           <span className="flex items-center gap-0.5 text-xs text-teal-600 font-medium bg-teal-50 px-1.5 py-0.5 rounded-full flex-shrink-0">
                             <Sparkles className="w-3 h-3" /> AI Summary
+                          </span>
+                        )}
+                        {meeting.primary_language && meeting.primary_language !== "English" && (
+                          <span className="flex items-center gap-0.5 text-xs text-indigo-600 font-medium bg-indigo-50 px-1.5 py-0.5 rounded-full flex-shrink-0">
+                            <Globe className="w-3 h-3" /> {meeting.primary_language}
                           </span>
                         )}
                       </div>

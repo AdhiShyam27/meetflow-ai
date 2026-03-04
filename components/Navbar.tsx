@@ -48,23 +48,49 @@ const productMenu: NavDropdown = {
   label: "Product",
   columns: [
     {
-      title: "In Meeting",
+      title: "During Your Meeting",
       items: [
-        { label: "Live Transcription", href: "#", icon: <Mic className="w-4 h-4" />, description: "Real-time, bot-free transcription" },
-        { label: "Google Meet", href: "#", icon: <Video className="w-4 h-4" />, description: "Works seamlessly with Meet" },
-        { label: "Zoom", href: "#", icon: <Video className="w-4 h-4" />, description: "Native Zoom integration" },
-        { label: "MS Teams", href: "#", icon: <Video className="w-4 h-4" />, description: "Teams-native experience" },
-        { label: "In-Meeting AI", href: "#", icon: <Brain className="w-4 h-4" />, description: "Ask AI questions live" },
-        { label: "Chrome Extension", href: "#", icon: <Chrome className="w-4 h-4" />, description: "One-click browser setup" },
+        {
+          label: "Live Transcription",
+          href: "#",
+          icon: <Mic className="w-4 h-4" />,
+          description: "Your words appear on screen the moment you speak — no bots, no delays. Works directly in your browser without joining your call.",
+        },
+        {
+          label: "Works on Any Platform",
+          href: "#",
+          icon: <Video className="w-4 h-4" />,
+          description: "Google Meet, Zoom, MS Teams, or any call — MeetFlow captures audio from your microphone so it works everywhere.",
+        },
+        {
+          label: "In-Meeting AI Assistant",
+          href: "#",
+          icon: <Brain className="w-4 h-4" />,
+          description: "Ask your AI assistant questions mid-call. 'What did they say about pricing?' — get instant answers without pausing the meeting.",
+        },
       ],
     },
     {
-      title: "Post Meeting",
+      title: "After Your Meeting",
       items: [
-        { label: "AI Summaries", href: "#", icon: <Sparkles className="w-4 h-4" />, description: "Auto-generated meeting recaps" },
-        { label: "Custom AI Prompts", href: "#", icon: <MessageSquare className="w-4 h-4" />, description: "Ask anything about your meetings" },
-        { label: "AI Note Taker", href: "#", icon: <ClipboardList className="w-4 h-4" />, description: "Smart notes, auto-organized" },
-        { label: "AI Workflows", href: "#", icon: <Workflow className="w-4 h-4" />, description: "Automate your post-meeting tasks" },
+        {
+          label: "AI Summary",
+          href: "#",
+          icon: <Sparkles className="w-4 h-4" />,
+          description: "The moment your meeting ends, Claude AI reads the full transcript and writes a structured recap — key points, decisions made, and action items with owners.",
+        },
+        {
+          label: "Ask Anything",
+          href: "#",
+          icon: <MessageSquare className="w-4 h-4" />,
+          description: "Type any question about your meeting and get a precise answer. 'What were the blockers mentioned?' or 'Who is following up on the budget?'",
+        },
+        {
+          label: "Smart Notes & Export",
+          href: "#",
+          icon: <ClipboardList className="w-4 h-4" />,
+          description: "Auto-organized notes grouped by topic. Share via link, copy to Notion, or email the summary directly to every attendee.",
+        },
       ],
     },
   ],
@@ -201,7 +227,7 @@ export default function Navbar() {
               transition={{ duration: 0.18, ease: "easeOut" }}
               onMouseEnter={() => handleMenuEnter(activeMenuData.label)}
               onMouseLeave={handleMenuLeave}
-              className="absolute top-14 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-indigo-200/30 border border-slate-200/80 p-6 min-w-[540px]"
+              className="absolute top-14 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-indigo-200/30 border border-slate-200/80 p-6 min-w-[680px]"
               style={{ marginLeft: activeMenuData.columns.length === 1 ? "-80px" : "0" }}
             >
               <div
@@ -219,17 +245,17 @@ export default function Navbar() {
                         <a
                           key={item.label}
                           href={item.href}
-                          className="flex items-start gap-3 p-2 rounded-xl hover:bg-indigo-50 group transition-colors"
+                          className="flex items-start gap-3 p-2.5 rounded-xl hover:bg-indigo-50 group transition-colors"
                         >
-                          <span className="mt-0.5 text-indigo-500 group-hover:text-indigo-600 transition-colors">
+                          <span className="mt-0.5 text-indigo-500 group-hover:text-indigo-600 transition-colors flex-shrink-0">
                             {item.icon}
                           </span>
                           <div>
-                            <p className="text-sm font-medium text-slate-700 group-hover:text-indigo-600 transition-colors">
+                            <p className="text-sm font-semibold text-slate-700 group-hover:text-indigo-600 transition-colors">
                               {item.label}
                             </p>
                             {item.description && (
-                              <p className="text-xs text-slate-400 mt-0.5">{item.description}</p>
+                              <p className="text-xs text-slate-500 mt-1 leading-relaxed">{item.description}</p>
                             )}
                           </div>
                         </a>
@@ -238,6 +264,31 @@ export default function Navbar() {
                   </div>
                 ))}
               </div>
+
+              {/* How it works strip — only shown on Product menu */}
+              {activeMenuData.label === "Product" && (
+                <div className="mt-5 pt-4 border-t border-slate-100">
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">How it works</p>
+                  <div className="flex items-center gap-2">
+                    {[
+                      { step: "1", text: "Join your meeting", icon: <Mic className="w-3.5 h-3.5" /> },
+                      { step: "2", text: "MeetFlow transcribes live", icon: <FileText className="w-3.5 h-3.5" /> },
+                      { step: "3", text: "AI writes your summary", icon: <Sparkles className="w-3.5 h-3.5" /> },
+                      { step: "4", text: "Share or email it", icon: <MessageSquare className="w-3.5 h-3.5" /> },
+                    ].map((s, i, arr) => (
+                      <div key={s.step} className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 bg-indigo-50 border border-indigo-100 rounded-lg px-2.5 py-1.5">
+                          <span className="text-indigo-500">{s.icon}</span>
+                          <span className="text-xs font-medium text-slate-600">{s.text}</span>
+                        </div>
+                        {i < arr.length - 1 && (
+                          <span className="text-slate-300 text-xs">→</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>

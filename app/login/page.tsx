@@ -210,14 +210,6 @@ export default function LoginPage() {
           <p className="text-slate-400 text-sm leading-relaxed mb-8">
             Sign in to access your transcripts, AI summaries, and meeting insights.
           </p>
-          <div className="grid grid-cols-3 gap-3 text-center">
-            {[["2M+","Transcripts/week"],["500K+","Active users"],["4.9★","Chrome rating"]].map(([v,l]) => (
-              <div key={l} className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)" }}>
-                <p className="text-white font-bold text-base">{v}</p>
-                <p className="text-slate-400 text-xs mt-0.5">{l}</p>
-              </div>
-            ))}
-          </div>
         </motion.div>
       </div>
     </div>

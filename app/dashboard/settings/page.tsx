@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { motion } from "framer-motion";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
@@ -21,7 +21,7 @@ interface GoogleStatus {
   connectedAt: string | null;
 }
 
-export default function SettingsPage() {
+function SettingsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [profile, setProfile] = useState<Profile>({ email: "", full_name: "" });
@@ -66,6 +66,7 @@ export default function SettingsPage() {
     const googleParam = searchParams.get("google");
     if (googleParam === "connected") toast.success("Google Calendar & Gmail connected!");
     if (googleParam === "error") toast.error("Google connection failed. Please try again.");
+    if (googleParam === "not-configured") toast.error("Google credentials not configured. Add GOOGLE_CLIENT_ID to your environment.");
   }, [router, searchParams]);
 
   const disconnectGoogle = async () => {
@@ -420,6 +421,14 @@ export default function SettingsPage() {
 
       </div>
     </div>
+  );
+}
+
+export default function SettingsPageWrapper() {
+  return (
+    <Suspense>
+      <SettingsPage />
+    </Suspense>
   );
 }
 

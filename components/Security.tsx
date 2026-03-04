@@ -1,14 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Shield, Lock, Eye, Server, CheckCircle } from "lucide-react";
-
-const badges = [
-  { label: "SOC 2 Type II", icon: <Shield className="w-5 h-5" />, color: "#4F46E5" },
-  { label: "GDPR Compliant", icon: <Lock className="w-5 h-5" />, color: "#14B8A6" },
-  { label: "HIPAA Ready", icon: <Eye className="w-5 h-5" />, color: "#F59E0B" },
-  { label: "ISO 27001", icon: <Server className="w-5 h-5" />, color: "#8B5CF6" },
-];
+import { Shield, Lock, CheckCircle } from "lucide-react";
 
 const trustPoints = [
   "We never record your meeting audio — only text",
@@ -99,88 +92,35 @@ export default function Security() {
               ))}
             </ul>
 
-            <motion.a
-              href="#"
-              whileHover={{ x: 4 }}
-              className="inline-flex items-center gap-2 text-teal-400 hover:text-teal-300 font-semibold text-sm transition-colors"
-            >
-              Read our full Trust Center →
-            </motion.a>
           </motion.div>
 
-          {/* Right: Badges */}
+          {/* Right: Simple security assurance */}
           <motion.div
             initial={{ opacity: 0, x: 30 }}
             whileInView={{ opacity: 1, x: 0 }}
             viewport={{ once: true }}
             transition={{ duration: 0.7 }}
-            className="grid grid-cols-2 gap-4"
+            className="flex flex-col items-center justify-center"
           >
-            {badges.map((badge, i) => (
-              <motion.div
-                key={badge.label}
-                initial={{ opacity: 0, scale: 0.9 }}
-                whileInView={{ opacity: 1, scale: 1 }}
-                viewport={{ once: true }}
-                transition={{ delay: i * 0.12, duration: 0.5 }}
-                whileHover={{ scale: 1.03 }}
-                className="relative rounded-2xl p-6 text-center cursor-default"
-                style={{
-                  background: "rgba(255,255,255,0.05)",
-                  border: `1px solid ${badge.color}30`,
-                  backdropFilter: "blur(12px)",
-                }}
-              >
-                {/* Glow */}
-                <div
-                  className="absolute inset-0 rounded-2xl opacity-0 hover:opacity-100 transition-opacity"
-                  style={{
-                    background: `radial-gradient(ellipse at 50% 50%, ${badge.color}15, transparent)`,
-                  }}
-                />
-
-                {/* Icon */}
-                <div
-                  className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3 relative"
-                  style={{
-                    background: `${badge.color}20`,
-                    border: `1px solid ${badge.color}40`,
-                    color: badge.color,
-                    boxShadow: `0 4px 16px ${badge.color}20`,
-                  }}
-                >
-                  {badge.icon}
-                </div>
-
-                <p className="text-white font-semibold text-sm mb-1">{badge.label}</p>
-                <div className="flex items-center justify-center gap-1">
-                  <div className="w-1.5 h-1.5 rounded-full bg-teal-400" />
-                  <span className="text-slate-400 text-xs">Certified</span>
-                </div>
-              </motion.div>
-            ))}
-
-            {/* Extra trust indicators */}
             <motion.div
-              initial={{ opacity: 0, y: 16 }}
-              whileInView={{ opacity: 1, y: 0 }}
+              initial={{ opacity: 0, scale: 0.9 }}
+              whileInView={{ opacity: 1, scale: 1 }}
               viewport={{ once: true }}
-              transition={{ delay: 0.5, duration: 0.5 }}
-              className="col-span-2 rounded-2xl p-4 flex items-center gap-4"
+              transition={{ duration: 0.6 }}
+              className="rounded-3xl p-10 text-center w-full"
               style={{
-                background: "rgba(20,184,166,0.08)",
-                border: "1px solid rgba(20,184,166,0.2)",
+                background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(99,102,241,0.25)",
+                backdropFilter: "blur(12px)",
               }}
             >
-              <div className="w-10 h-10 rounded-xl bg-teal-500/20 flex items-center justify-center flex-shrink-0">
-                <Lock className="w-5 h-5 text-teal-400" />
+              <div className="w-16 h-16 rounded-2xl bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center mx-auto mb-6">
+                <Lock className="w-8 h-8 text-indigo-300" />
               </div>
-              <div>
-                <p className="text-white font-semibold text-sm">End-to-end encrypted</p>
-                <p className="text-slate-400 text-xs mt-0.5">
-                  AES-256 encryption at rest and in transit. Zero-knowledge architecture.
-                </p>
-              </div>
+              <h3 className="text-white text-2xl font-bold mb-3">Your data is secured</h3>
+              <p className="text-slate-400 text-base leading-relaxed">
+                Everything you record and transcribe stays private. We encrypt your data and never share it with anyone — ever.
+              </p>
             </motion.div>
           </motion.div>
         </div>

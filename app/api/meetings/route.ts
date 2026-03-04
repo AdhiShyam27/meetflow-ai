@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { decrypt } from "@/lib/encryption";
 
 const isDemoMode =
   !process.env.NEXT_PUBLIC_SUPABASE_URL ||
@@ -30,7 +31,13 @@ export async function GET() {
 
     if (error) throw error;
 
-    return NextResponse.json({ meetings: data });
+    // Decrypt transcripts — handles both encrypted and legacy plaintext rows
+    const meetings = (data ?? []).map((m) => ({
+      ...m,
+      transcript: m.transcript ? decrypt(m.transcript, user.id) : m.transcript,
+    }));
+
+    return NextResponse.json({ meetings });
   } catch (err) {
     console.error("[GET /api/meetings]", err);
     return NextResponse.json({ error: "Server error" }, { status: 500 });

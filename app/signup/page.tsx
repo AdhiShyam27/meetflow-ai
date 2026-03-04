@@ -199,18 +199,6 @@ export default function SignupPage() {
             ))}
           </ul>
 
-          <div className="mt-10 rounded-2xl p-4" style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)" }}>
-            <div className="flex items-center gap-3 mb-2">
-              <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center text-sm font-bold text-white">SC</div>
-              <div>
-                <p className="text-white text-xs font-semibold">Sarah Chen</p>
-                <p className="text-slate-400 text-xs">Product Manager, CloudForm</p>
-              </div>
-            </div>
-            <p className="text-slate-300 text-xs leading-relaxed italic">
-              &ldquo;MeetFlow saves our team 2 hours every week. The AI summary is incredibly accurate.&rdquo;
-            </p>
-          </div>
         </motion.div>
       </div>
     </div>
