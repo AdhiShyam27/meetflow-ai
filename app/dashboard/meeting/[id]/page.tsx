@@ -22,6 +22,7 @@ interface Meeting {
     overview?: string; keyPoints?: string[]; actionItems?: ActionItem[];
     decisions?: string[]; questions?: string[];
   } | null;
+  notes?: Note[];
 }
 interface ChatMessage { role: "user" | "assistant"; content: string; }
 interface Note { id: string; text: string; createdAt: string; }
@@ -225,7 +226,11 @@ export default function MeetingPage() {
     async function load() {
       try {
         const res = await fetch(`/api/meetings/${id}`);
-        if (res.ok) setMeeting(await res.json());
+        if (res.ok) {
+          const data = await res.json();
+          setMeeting(data);
+          if (Array.isArray(data.notes)) setNotes(data.notes);
+        }
       } catch { toast.error("Could not load meeting"); }
       finally { setLoading(false); }
     }
@@ -349,13 +354,31 @@ export default function MeetingPage() {
     finally { setRegenerating(false); }
   };
 
-  const addNote = () => {
+  const addNote = async () => {
     if (!noteInput.trim()) return;
-    setNotes((prev) => [
-      { id: String(Date.now()), text: noteInput.trim(), createdAt: new Date().toISOString() },
-      ...prev,
-    ]);
+    const newNote: Note = { id: String(Date.now()), text: noteInput.trim(), createdAt: new Date().toISOString() };
+    const updated = [newNote, ...notes];
+    setNotes(updated);
     setNoteInput("");
+    try {
+      await fetch(`/api/meetings/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes: updated }),
+      });
+    } catch { /* non-critical */ }
+  };
+
+  const deleteNote = async (noteId: string) => {
+    const updated = notes.filter((n) => n.id !== noteId);
+    setNotes(updated);
+    try {
+      await fetch(`/api/meetings/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes: updated }),
+      });
+    } catch { /* non-critical */ }
   };
 
   const deleteMeeting = async () => {
@@ -777,7 +800,7 @@ export default function MeetingPage() {
                           </div>
                           <p className="text-sm text-slate-700 leading-relaxed">{note.text}</p>
                         </div>
-                        <button onClick={() => setNotes((prev) => prev.filter((n) => n.id !== note.id))} className="text-slate-300 hover:text-red-400 transition-colors flex-shrink-0">
+                        <button onClick={() => deleteNote(note.id)} className="text-slate-300 hover:text-red-400 transition-colors flex-shrink-0">
                           <X className="w-3.5 h-3.5" />
                         </button>
                       </div>

@@ -56,7 +56,9 @@ export default function Sidebar({ user }: SidebarProps) {
     fetch("/api/meetings")
       .then((r) => r.json())
       .then((data) => {
-        if (Array.isArray(data)) setMeetingCount(data.length);
+        if (data?.meetings && Array.isArray(data.meetings)) {
+          setMeetingCount(data.meetings.length);
+        }
       })
       .catch(() => {});
   }, []);

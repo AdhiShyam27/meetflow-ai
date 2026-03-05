@@ -87,10 +87,17 @@ function SettingsPage() {
     setSavingProfile(true);
     try {
       const supabase = createClient();
-      const { error } = await supabase.auth.updateUser({
+      const { data: { user }, error: authError } = await supabase.auth.updateUser({
         data: { full_name: profile.full_name },
       });
-      if (error) throw error;
+      if (authError) throw authError;
+      // Also sync to profiles table so it's visible elsewhere
+      if (user) {
+        await supabase
+          .from("profiles")
+          .update({ full_name: profile.full_name })
+          .eq("id", user.id);
+      }
       toast.success("Profile updated");
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : "Failed to update profile");

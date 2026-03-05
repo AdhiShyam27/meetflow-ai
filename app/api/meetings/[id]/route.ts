@@ -89,6 +89,9 @@ export async function PATCH(
     if (body.primary_language !== undefined && (typeof body.primary_language !== "string" || body.primary_language.length > MAX_LANG)) {
       return NextResponse.json({ error: "Invalid language" }, { status: 400 });
     }
+    if (body.notes !== undefined && !Array.isArray(body.notes)) {
+      return NextResponse.json({ error: "Invalid notes" }, { status: 400 });
+    }
 
     const { data, error } = await supabase
       .from("meetings")
@@ -101,6 +104,7 @@ export async function PATCH(
         ...(body.duration !== undefined && { duration: body.duration }),
         ...(body.detected_languages !== undefined && { detected_languages: body.detected_languages }),
         ...(body.primary_language !== undefined && { primary_language: body.primary_language }),
+        ...(body.notes !== undefined && { notes: body.notes }),
       })
       .eq("id", id)
       .eq("user_id", user.id)

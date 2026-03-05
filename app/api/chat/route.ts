@@ -61,7 +61,7 @@ ${
 
   // Real streaming Claude response
   const stream = await client.messages.create({
-    model: "claude-sonnet-4-5-20251022",
+    model: "claude-sonnet-4-6",
     max_tokens: 2048,
     system: systemPrompt,
     messages,

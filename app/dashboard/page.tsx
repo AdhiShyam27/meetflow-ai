@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic2, Clock, Sparkles, Plus, Search,
   MoreHorizontal, Calendar, ChevronRight, Zap, Trash2,
-  ExternalLink, Radio,
+  ExternalLink, Radio, FileText,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -192,8 +192,8 @@ export default function DashboardPage() {
     {
       label: "Words Transcribed",
       value: totalWords > 0 ? `${(totalWords / 1000).toFixed(1)}k` : "0",
-      icon: <Sparkles className="w-4 h-4" />,
-      color: "#14B8A6",
+      icon: <FileText className="w-4 h-4" />,
+      color: "#8B5CF6",
     },
   ];
 
