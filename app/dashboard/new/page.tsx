@@ -147,8 +147,13 @@ function NewMeetingPage() {
   const lineIdRef = useRef(0);
   const meetingIdRef = useRef<string | null>(null);
   const phaseRef = useRef<"setup" | "recording" | "processing" | "done">("setup");
+  // Ref so recognition.onresult always reads the latest speaker — fixes stale closure bug
+  const currentSpeakerIdxRef = useRef(currentSpeakerIdx);
 
   const currentSpeaker = SPEAKERS[currentSpeakerIdx];
+
+  // Keep ref in sync whenever state changes
+  useEffect(() => { currentSpeakerIdxRef.current = currentSpeakerIdx; }, [currentSpeakerIdx]);
 
   // Pre-fill from Google Calendar query params (+ auto-start flag)
   const [autoStartPending, setAutoStartPending] = useState(false);
@@ -197,6 +202,19 @@ function NewMeetingPage() {
       if (timerRef.current) clearInterval(timerRef.current);
     }
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [phase]);
+
+  // Keyboard shortcuts: press 1/2/3 during recording to switch speakers instantly
+  useEffect(() => {
+    if (phase !== "recording") return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "1") setCurrentSpeakerIdx(0);
+      if (e.key === "2") setCurrentSpeakerIdx(1);
+      if (e.key === "3") setCurrentSpeakerIdx(2);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, [phase]);
 
   // Waveform animation from mic
@@ -270,7 +288,8 @@ function NewMeetingPage() {
         if (result.isFinal) {
           const text = result[0].transcript.trim();
           if (text) {
-            const sp = SPEAKERS[currentSpeakerIdx];
+            // Use ref (not state) so we always get the latest speaker even mid-recording
+            const sp = SPEAKERS[currentSpeakerIdxRef.current];
             setTranscript((prev) => [
               ...prev,
               {
@@ -333,7 +352,7 @@ function NewMeetingPage() {
     } catch {
       toast.error("Could not start recognition. Check microphone permissions.");
     }
-  }, [title, platform, currentSpeakerIdx, recordingSeconds, startWaveform]);
+  }, [title, platform, recordingSeconds, startWaveform]);
 
   // Stop + summarize
   const stopAndSummarize = useCallback(async () => {
@@ -551,19 +570,30 @@ function NewMeetingPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Speaker switcher */}
-            <div className="flex items-center gap-1.5 bg-slate-100 rounded-xl p-1">
-              {SPEAKERS.slice(0, 3).map((sp, idx) => (
-                <button
-                  key={sp.name}
-                  onClick={() => setCurrentSpeakerIdx(idx)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${currentSpeakerIdx === idx ? "bg-white shadow-sm text-slate-800" : "text-slate-500 hover:text-slate-700"}`}
-                  title={`Switch to ${sp.name}`}
-                  style={currentSpeakerIdx === idx ? { borderLeft: `2px solid ${sp.color}` } : {}}
-                >
-                  {sp.name}
-                </button>
-              ))}
+            {/* Speaker switcher — press 1/2/3 to switch */}
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-1.5 bg-slate-100 rounded-xl p-1">
+                {SPEAKERS.slice(0, 3).map((sp, idx) => (
+                  <button
+                    key={sp.name}
+                    onClick={() => setCurrentSpeakerIdx(idx)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                      currentSpeakerIdx === idx
+                        ? "bg-white shadow-sm text-slate-800"
+                        : "text-slate-500 hover:text-slate-700"
+                    }`}
+                    title={`Switch to ${sp.name} (press ${idx + 1})`}
+                  >
+                    <span
+                      className="w-2 h-2 rounded-full flex-shrink-0"
+                      style={{ background: currentSpeakerIdx === idx ? sp.color : "#CBD5E1" }}
+                    />
+                    {sp.name}
+                    <span className="text-slate-400 font-normal">{idx + 1}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-slate-400 text-xs pr-1">Press 1 / 2 / 3 to switch speaker</p>
             </div>
 
             <button
