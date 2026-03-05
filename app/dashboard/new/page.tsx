@@ -149,11 +149,14 @@ function NewMeetingPage() {
   const phaseRef = useRef<"setup" | "recording" | "processing" | "done">("setup");
   // Ref so recognition.onresult always reads the latest speaker — fixes stale closure bug
   const currentSpeakerIdxRef = useRef(currentSpeakerIdx);
+  // Ref so stopAndSummarize always reads the latest transcript — fixes stale closure bug
+  const transcriptRef = useRef<TranscriptLine[]>([]);
 
   const currentSpeaker = SPEAKERS[currentSpeakerIdx];
 
-  // Keep ref in sync whenever state changes
+  // Keep refs in sync whenever state changes
   useEffect(() => { currentSpeakerIdxRef.current = currentSpeakerIdx; }, [currentSpeakerIdx]);
+  useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
 
   // Pre-fill from Google Calendar query params (+ auto-start flag)
   const [autoStartPending, setAutoStartPending] = useState(false);
@@ -362,7 +365,8 @@ function NewMeetingPage() {
     setPhase("processing");
     setInterimText("");
 
-    const fullTranscript = transcript
+    // Use ref to get the very latest transcript lines — avoids stale closure bug
+    const fullTranscript = transcriptRef.current
       .filter((l) => l.isFinal)
       .map((l) => `${l.speaker}: ${l.text}`)
       .join("\n");
@@ -397,7 +401,7 @@ function NewMeetingPage() {
         const resolvedSummary = aiSummary?.summary ?? MOCK_SUMMARY;
         setSummary(resolvedSummary);
 
-        await fetch(`/api/meetings/${id}`, {
+        const patchRes = await fetch(`/api/meetings/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -407,6 +411,12 @@ function NewMeetingPage() {
             status: "done",
           }),
         });
+
+        if (!patchRes.ok) {
+          const err = await patchRes.json().catch(() => ({}));
+          console.error("[save meeting] PATCH failed", patchRes.status, err);
+          toast.error("Meeting saved but transcript may not have persisted");
+        }
 
         setSavedMeetingId(id);
         meetingIdRef.current = id;
@@ -424,7 +434,7 @@ function NewMeetingPage() {
 
     setPhase("done");
     toast.success("Summary generated!");
-  }, [transcript, title, platform, recordingSeconds, stopWaveform]);
+  }, [title, platform, recordingSeconds, stopWaveform]);
 
   const formatTime = (s: number) =>
     `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
