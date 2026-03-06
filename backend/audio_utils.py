@@ -13,7 +13,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-FFMPEG_CMD = os.getenv("FFMPEG_PATH", "ffmpeg")
+FFMPEG_CMD = config.FFMPEG_PATH
 
 
 def _run_ffmpeg(*args: str) -> subprocess.CompletedProcess:

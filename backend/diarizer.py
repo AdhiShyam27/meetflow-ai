@@ -49,6 +49,7 @@ class SpeakerDiarizer:
             "pyannote/speaker-diarization-3.1",
             use_auth_token=config.HF_TOKEN,
         )
+        # pyannote 4.x: use_auth_token is still accepted but we also set env var as fallback
 
         device = torch.device(config.DEVICE if config.DEVICE != "cpu" else "cpu")
         self._pipeline.to(device)

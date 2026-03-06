@@ -58,6 +58,27 @@ HF_TOKEN: str | None = os.getenv("HF_TOKEN")
 MAX_FILE_SIZE_MB: int = 500
 ALLOWED_EXTENSIONS: set[str] = {".mp3", ".wav", ".m4a", ".webm", ".ogg", ".mp4", ".flac", ".aac"}
 
+# ── ffmpeg path ───────────────────────────────────────────────────────────────
+# conda ffmpeg is not on PATH by default — search common install locations
+
+def _find_ffmpeg() -> str:
+    import shutil
+    if explicit := os.getenv("FFMPEG_PATH"):
+        return explicit
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    for candidate in [
+        "/Users/adhishyam/anaconda3/bin/ffmpeg",
+        "/opt/conda/bin/ffmpeg",
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+    ]:
+        if os.path.isfile(candidate):
+            return candidate
+    return "ffmpeg"
+
+FFMPEG_PATH: str = _find_ffmpeg()
+
 # ── Temp directory ────────────────────────────────────────────────────────────
 
 TEMP_DIR: str = os.getenv("TEMP_DIR", "/tmp/meetflow")
