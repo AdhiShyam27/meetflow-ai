@@ -6,7 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import {
   Zap, Settings, LogOut, ChevronLeft, ChevronRight, Plus,
   Sparkles, Search, FileText, Users, BarChart2, Archive,
-  Workflow, MessageSquare, Gift, UserPlus, Mic,
+  Workflow, MessageSquare, Gift, UserPlus, Mic, Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -19,6 +19,7 @@ const NAV_ITEMS = [
   { label: "Search", href: "/dashboard", icon: Search, shortcut: "⌘K" },
   { label: "My Meetings", href: "/dashboard", icon: FileText },
   { label: "New Recording", href: "/dashboard/new", icon: Mic },
+  { label: "Upload File", href: "/dashboard/upload", icon: Upload },
   { label: "Shared with Me", href: "/dashboard", icon: Users },
   { label: "AI Tools", href: "/dashboard", icon: Sparkles },
   { label: "Settings", href: "/dashboard/settings", icon: Settings },
@@ -77,6 +78,7 @@ export default function Sidebar({ user }: SidebarProps) {
   const isActive = (href: string, label: string) => {
     if (label === "My Meetings" && pathname === "/dashboard") return true;
     if (label === "New Recording" && pathname === "/dashboard/new") return true;
+    if (label === "Upload File" && pathname === "/dashboard/upload") return true;
     if (label === "Settings" && pathname.startsWith("/dashboard/settings")) return true;
     return false;
   };

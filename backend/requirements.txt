@@ -1,0 +1,28 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+python-multipart==0.0.9
+python-dotenv==1.0.1
+
+# PyTorch — install the correct variant for your platform:
+#   Apple Silicon:  pip install torch torchaudio
+#   CUDA 12.x:      pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1.0
+torchaudio>=2.1.0
+
+# Transcription
+faster-whisper==1.1.0
+whisperx @ git+https://github.com/m-bain/whisperX.git
+
+# Speaker diarization (requires HF_TOKEN + accepting model licenses on HuggingFace)
+pyannote.audio==3.3.2
+
+# Audio utilities
+numpy>=1.24.0
+soundfile==0.12.1
+pydub==0.25.1
+
+# WebSocket + streaming
+websockets==12.0
+
+# Monitoring
+psutil==5.9.8
