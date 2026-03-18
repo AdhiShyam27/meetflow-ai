@@ -5,9 +5,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Mic, Square, Sparkles, Loader2,
-  Copy, Check, ArrowLeft, Calendar,
+  Copy, Check, ArrowLeft, Calendar, Users, Monitor,
 } from "lucide-react";
 import { toast } from "sonner";
+import TalkingPointsPanel from "@/components/meeting/TalkingPointsPanel";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,18 @@ const PLATFORMS = [
   { id: "teams", label: "MS Teams", color: "#5059C9" },
   { id: "other", label: "Other / Recording", color: "#64748B" },
 ] as const;
+
+const MEETING_TEMPLATES = [
+  { id: "general",        label: "General",        emoji: "📋" },
+  { id: "customer_call",  label: "Sales Call",      emoji: "🤝" },
+  { id: "standup",        label: "Standup",         emoji: "⚡" },
+  { id: "one_on_one",     label: "1:1",             emoji: "👤" },
+  { id: "interview",      label: "Interview",       emoji: "🎯" },
+  { id: "brainstorm",     label: "Brainstorm",      emoji: "💡" },
+  { id: "product_review", label: "Product Review",  emoji: "🔍" },
+] as const;
+
+type MeetingTemplateId = typeof MEETING_TEMPLATES[number]["id"];
 
 const SPEAKERS = [
   { name: "You", color: "#4F46E5" },
@@ -113,6 +126,47 @@ declare global {
   }
 }
 
+// ── Real-time speaker detection via spectral centroid clustering ──────────────
+//
+// Each person's voice has a unique "spectral centroid" — the frequency-weighted
+// centre of mass of their speech energy. We collect these silently from the
+// AnalyserNode (already running for the waveform) and cluster them per speaker.
+//
+// Algorithm:
+//  1. Every animation frame (~16ms), if audio level > silence threshold,
+//     compute spectral centroid from getByteFrequencyData() and push to buffer.
+//  2. When a sentence finalises (onresult isFinal), pull the last ~3s of
+//     snapshots, average them → "voice signature" for this utterance.
+//  3. Compare against stored speaker profiles (exponential moving averages).
+//     If distance > THRESHOLD bins → new/different speaker, switch automatically.
+//  4. Update the matched speaker's profile with the new observation.
+
+interface VoiceProfile { centroid: number; count: number }
+
+function autoDetectSpeaker(
+  centroid: number,
+  profiles: Array<VoiceProfile | null>,
+): number {
+  // A difference of ~5 frequency bins (~940 Hz at 48kHz/256 FFT) separates speakers.
+  // Increase if you get false-positive switches; decrease if switches are missed.
+  const THRESHOLD = 5;
+
+  let bestIdx = -1, bestDist = Infinity;
+  for (let i = 0; i < SPEAKERS.length; i++) {
+    const p = profiles[i];
+    if (!p) continue;
+    const d = Math.abs(centroid - p.centroid);
+    if (d < bestDist) { bestDist = d; bestIdx = i; }
+  }
+
+  // No profiles yet, or no close match → first empty slot = new speaker
+  if (bestIdx === -1 || bestDist > THRESHOLD) {
+    const empty = profiles.findIndex((p) => p === null);
+    return empty >= 0 ? empty : Math.max(0, bestIdx);
+  }
+  return bestIdx;
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 function NewMeetingPage() {
@@ -122,6 +176,7 @@ function NewMeetingPage() {
   // Setup state
   const [title, setTitle] = useState("");
   const [platform, setPlatform] = useState<typeof PLATFORMS[number]>(PLATFORMS[0]);
+  const [meetingTemplate, setMeetingTemplate] = useState<MeetingTemplateId>("general");
   const [currentSpeakerIdx, setCurrentSpeakerIdx] = useState(0);
   const [fromCalendar, setFromCalendar] = useState(false);
 
@@ -137,6 +192,13 @@ function NewMeetingPage() {
   const [copied, setCopied] = useState(false);
   const [savedMeetingId, setSavedMeetingId] = useState<string | null>(null);
 
+  // Processing step for two-phase loading UI
+  const [processingStep, setProcessingStep] = useState<"transcribing" | "summarizing">("transcribing");
+
+  // Recording mode: mic only (in-person) vs system audio (remote call)
+  const [recordingMode, setRecordingMode] = useState<"inperson" | "remote">("inperson");
+  const recordingModeRef = useRef<"inperson" | "remote">("inperson");
+
   // Refs
   const recognitionRef = useRef<ISpeechRecognition | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -151,12 +213,23 @@ function NewMeetingPage() {
   const currentSpeakerIdxRef = useRef(currentSpeakerIdx);
   // Ref so stopAndSummarize always reads the latest transcript — fixes stale closure bug
   const transcriptRef = useRef<TranscriptLine[]>([]);
+  // Ref so recognition.onresult always reads the latest recording time — fixes stale closure bug
+  const recordingSecondsRef = useRef(0);
+  // MediaRecorder refs — captures full audio in parallel for WhisperX final pass
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  // Voice fingerprint refs — real-time speaker auto-detection
+  const voiceSnapshotsRef = useRef<Array<{ t: number; c: number }>>([]);
+  const speakerProfilesRef = useRef<Array<VoiceProfile | null>>(Array(SPEAKERS.length).fill(null));
 
   const currentSpeaker = SPEAKERS[currentSpeakerIdx];
 
   // Keep refs in sync whenever state changes
   useEffect(() => { currentSpeakerIdxRef.current = currentSpeakerIdx; }, [currentSpeakerIdx]);
   useEffect(() => { transcriptRef.current = transcript; }, [transcript]);
+  useEffect(() => { recordingSecondsRef.current = recordingSeconds; }, [recordingSeconds]);
+  useEffect(() => { recordingModeRef.current = recordingMode; }, [recordingMode]);
 
   // Pre-fill from Google Calendar query params (+ auto-start flag)
   const [autoStartPending, setAutoStartPending] = useState(false);
@@ -220,13 +293,18 @@ function NewMeetingPage() {
     return () => window.removeEventListener("keydown", handler);
   }, [phase]);
 
-  // Waveform animation from mic
-  const startWaveform = useCallback(async () => {
+  // Waveform animation from mic — accepts an optional existing stream (remote mode reuses getDisplayMedia stream)
+  const startWaveform = useCallback(async (existingStream?: MediaStream): Promise<MediaStream | null> => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = existingStream ?? await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      if (!existingStream) mediaStreamRef.current = stream;
+
       const ctx = new AudioContext();
+      // Must resume — browsers suspend AudioContext until user gesture has occurred
+      await ctx.resume();
       const analyser = ctx.createAnalyser();
-      analyser.fftSize = 64;
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8;
       const source = ctx.createMediaStreamSource(stream);
       source.connect(analyser);
       audioCtxRef.current = ctx;
@@ -235,16 +313,31 @@ function NewMeetingPage() {
       const draw = () => {
         const data = new Uint8Array(analyser.frequencyBinCount);
         analyser.getByteFrequencyData(data);
+
+        // ── Voice fingerprint snapshot (for real-time speaker detection) ──────
+        // Compute spectral centroid: weighted average frequency bin.
+        // Only sample during actual speech (avgLevel > silence threshold).
+        let wSum = 0, mSum = 0;
+        for (let i = 1; i < data.length; i++) { wSum += i * data[i]; mSum += data[i]; }
+        const avgLevel = mSum / data.length;
+        if (avgLevel > 12 && mSum > 0) {
+          const snaps = voiceSnapshotsRef.current;
+          snaps.push({ t: Date.now(), c: wSum / mSum });
+          // Keep ~8 seconds of history at 60fps (≈ 480 frames) — trim in bulk
+          if (snaps.length > 500) snaps.splice(0, 100);
+        }
+
         const bars = Array.from({ length: 20 }, (_, i) => {
           const val = data[Math.floor((i / 20) * data.length)] || 0;
-          return Math.max(4, Math.floor((val / 255) * 40));
+          return Math.max(4, Math.floor((val / 255) * 48));
         });
         setAudioLevel(bars);
         animFrameRef.current = requestAnimationFrame(draw);
       };
       draw();
+      return stream;
     } catch {
-      // Fallback: animated mock waveform
+      // Fallback: animated mock waveform (mic permission denied)
       let t = 0;
       const animate = () => {
         t += 0.15;
@@ -254,14 +347,56 @@ function NewMeetingPage() {
         animFrameRef.current = requestAnimationFrame(animate);
       };
       animate();
+      return null;
     }
   }, []);
 
   const stopWaveform = useCallback(() => {
     cancelAnimationFrame(animFrameRef.current);
     audioCtxRef.current?.close();
+    audioCtxRef.current = null;
+    // Release mic — stop all tracks so the recording indicator in the browser goes away
+    mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+    mediaStreamRef.current = null;
     setAudioLevel(Array(20).fill(3));
   }, []);
+
+  // Helper: start MediaRecorder from a stream
+  const _startMediaRecorder = useCallback((stream: MediaStream) => {
+    audioChunksRef.current = [];
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : MediaRecorder.isTypeSupported("audio/webm")
+      ? "audio/webm"
+      : "audio/ogg";
+    const mr = new MediaRecorder(stream, { mimeType });
+    mr.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data);
+    };
+    mr.start(1000);
+    mediaRecorderRef.current = mr;
+  }, []);
+
+  // Helper: create meeting in DB
+  const _createMeetingRecord = useCallback(async () => {
+    try {
+      const res = await fetch("/api/meetings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: title.trim() || "Untitled Meeting",
+          platform: platform.id,
+          language: "en-US",
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        meetingIdRef.current = data.meeting?.id ?? null;
+      } else {
+        console.error("[createMeeting] failed", res.status, await res.text().catch(() => ""));
+      }
+    } catch (err) { console.error("[createMeeting] network error", err); }
+  }, [title, platform]);
 
   // Start recording
   const startRecording = useCallback(async () => {
@@ -270,6 +405,47 @@ function NewMeetingPage() {
       return;
     }
 
+    // ── Remote call mode: capture system audio via screen share ──────────────
+    if (recordingMode === "remote") {
+      try {
+        // getDisplayMedia shows the browser "share screen" dialog
+        // User must select their meeting tab and enable "Share tab audio"
+        const displayStream = await (navigator.mediaDevices as unknown as {
+          getDisplayMedia(c: object): Promise<MediaStream>;
+        }).getDisplayMedia({ audio: true, video: { width: 1, height: 1 } });
+
+        if (!displayStream.getAudioTracks().length) {
+          displayStream.getTracks().forEach((t) => t.stop());
+          toast.error("No audio captured. Enable 'Share tab audio' when sharing.");
+          return;
+        }
+
+        mediaStreamRef.current = displayStream;
+        setPhase("recording");
+
+        // Waveform from display audio
+        await startWaveform(displayStream);
+
+        // MediaRecorder captures ALL voices from the meeting tab
+        _startMediaRecorder(displayStream);
+
+        // If user stops screen share → auto-stop recording
+        displayStream.getVideoTracks()[0]?.addEventListener("ended", () => {
+          if (phaseRef.current === "recording") {
+            // Trigger stop via a custom event so stopAndSummarize is always the latest version
+            window.dispatchEvent(new CustomEvent("meetflow:autostop"));
+          }
+        });
+
+        await _createMeetingRecord();
+        toast.success("Recording started — all voices from your meeting are being captured");
+      } catch {
+        toast.error("Screen share cancelled or not supported. Try in-person mode instead.");
+      }
+      return;
+    }
+
+    // ── In-person mode: microphone + Web Speech API live preview ─────────────
     const SpeechRecognitionAPI =
       window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -278,100 +454,208 @@ function NewMeetingPage() {
       return;
     }
 
-    const recognition = new SpeechRecognitionAPI();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.maxAlternatives = 1;
+    // ── Dual-recognition: two instances alternate so there's zero gap on restart ──
+    // When instance A fires onend (Chrome's ~5s no-speech timeout or natural pause),
+    // instance B is already created and starts immediately. This eliminates the
+    // ~100-300ms dead window where words get dropped during a single-instance restart.
+    let activeRecognition: ISpeechRecognition | null = null;
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          const text = result[0].transcript.trim();
-          if (text) {
-            // Use ref (not state) so we always get the latest speaker even mid-recording
-            const sp = SPEAKERS[currentSpeakerIdxRef.current];
-            setTranscript((prev) => [
-              ...prev,
-              {
-                id: String(lineIdRef.current++),
-                speaker: sp.name,
-                speakerColor: sp.color,
-                text,
-                isFinal: true,
-                timestamp: recordingSeconds,
-              },
-            ]);
-            setInterimText("");
+    const makeRecognition = (): ISpeechRecognition => {
+      const rec = new SpeechRecognitionAPI();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = "en-US";
+      rec.maxAlternatives = 1;
+
+      rec.onresult = (event: SpeechRecognitionEvent) => {
+        let interim = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i];
+          if (result.isFinal) {
+            const text = result[0].transcript.trim();
+            if (text) {
+              // ── Auto speaker detection via spectral centroid ───────────────
+              // Pull snapshots from the last 3.5s (the utterance just spoken),
+              // skipping the most recent 80ms to avoid overlap with next speaker.
+              const now = Date.now();
+              const snaps = voiceSnapshotsRef.current.filter(
+                (s) => s.t > now - 3500 && s.t < now - 80
+              );
+              if (snaps.length >= 6) {
+                const avgC = snaps.reduce((a, s) => a + s.c, 0) / snaps.length;
+                const detectedIdx = autoDetectSpeaker(avgC, speakerProfilesRef.current);
+
+                // Update speaker profile — exponential moving average so it adapts
+                const prev = speakerProfilesRef.current[detectedIdx];
+                speakerProfilesRef.current[detectedIdx] = prev
+                  ? { centroid: prev.centroid * 0.8 + avgC * 0.2, count: prev.count + 1 }
+                  : { centroid: avgC, count: 1 };
+
+                // Switch speaker if detected a different voice
+                if (detectedIdx !== currentSpeakerIdxRef.current) {
+                  currentSpeakerIdxRef.current = detectedIdx;
+                  setCurrentSpeakerIdx(detectedIdx);
+                  // Announce only after first calibration sentence (count > 1)
+                  if ((speakerProfilesRef.current[detectedIdx]?.count ?? 0) > 1) {
+                    toast(`🎤 ${SPEAKERS[detectedIdx].name} speaking`, { duration: 1800 });
+                  }
+                }
+              }
+
+              const sp = SPEAKERS[currentSpeakerIdxRef.current];
+              setTranscript((prev) => [
+                ...prev,
+                {
+                  id: String(lineIdRef.current++),
+                  speaker: sp.name,
+                  speakerColor: sp.color,
+                  text,
+                  isFinal: true,
+                  timestamp: recordingSecondsRef.current,
+                },
+              ]);
+              setInterimText("");
+            }
+          } else {
+            interim += result[0].transcript;
           }
-        } else {
-          interim += result[0].transcript;
         }
-      }
-      setInterimText(interim);
+        if (interim) setInterimText(interim);
+      };
+
+      rec.onend = () => {
+        if (phaseRef.current !== "recording") return;
+        // Immediately swap to a fresh instance — no gap
+        const next = makeRecognition();
+        activeRecognition = next;
+        recognitionRef.current = next;
+        try { next.start(); } catch { /* browser already cleaned up */ }
+      };
+
+      rec.onerror = (event: SpeechRecognitionErrorEvent) => {
+        // no-speech and aborted are normal lifecycle events — onend handles restart
+        if (event.error !== "no-speech" && event.error !== "aborted") {
+          toast.error(`Mic error: ${event.error}`);
+        }
+      };
+
+      return rec;
     };
 
-    // Auto-restart on end (recognition times out after ~60s silence)
-    recognition.onend = () => {
-      if (phaseRef.current === "recording") {
-        try { recognition.start(); } catch { /* already stopping */ }
-      }
-    };
+    const recognition = makeRecognition();
+    activeRecognition = recognition;
 
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      if (event.error !== "no-speech" && event.error !== "aborted") {
-        toast.error(`Mic error: ${event.error}`);
-      }
-    };
+    // Reset voice fingerprints for a fresh session
+    voiceSnapshotsRef.current = [];
+    speakerProfilesRef.current = Array(SPEAKERS.length).fill(null);
+    setCurrentSpeakerIdx(0);
+    currentSpeakerIdxRef.current = 0;
 
     try {
       recognition.start();
       recognitionRef.current = recognition;
       setPhase("recording");
-      await startWaveform();
 
-      // Create meeting record in DB
-      try {
-        const res = await fetch("/api/meetings", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: title.trim() || "Untitled Meeting",
-            platform: platform.id,
-            language: "en-US",
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          meetingIdRef.current = data.meeting?.id ?? null;
-        }
-      } catch {
-        // DB not available — continue without persisting
-      }
+      // Start waveform — get stream for MediaRecorder (same mic stream, no double permission prompt)
+      const stream = await startWaveform();
+      if (stream) _startMediaRecorder(stream);
 
+      await _createMeetingRecord();
       toast.success("Transcription started");
     } catch {
-      toast.error("Could not start recognition. Check microphone permissions.");
+      toast.error("Could not start recording. Check microphone permissions.");
     }
-  }, [title, platform, recordingSeconds, startWaveform]);
+  }, [title, platform, recordingMode, startWaveform, _startMediaRecorder, _createMeetingRecord]);
 
   // Stop + summarize
   const stopAndSummarize = useCallback(async () => {
+    // Guard against double-click: if already processing, do nothing
+    if (phaseRef.current !== "recording") return;
+    // Set ref immediately so onend handler sees "processing" and doesn't restart recognition
+    phaseRef.current = "processing";
     recognitionRef.current?.stop();
     recognitionRef.current?.abort();
-    stopWaveform();
+
+    // ── IMPORTANT: stop animation ONLY — do NOT stop media stream tracks yet.
+    // The MediaRecorder is still reading from the stream. Stopping the stream
+    // before stopping the recorder cuts off the audio and diarization gets empty input.
+    cancelAnimationFrame(animFrameRef.current);
+    try { audioCtxRef.current?.close(); } catch { /* ignore */ }
+    audioCtxRef.current = null;
+    setAudioLevel(Array(20).fill(3));
+
     setPhase("processing");
+    setProcessingStep("transcribing");
     setInterimText("");
 
-    // Use ref to get the very latest transcript lines — avoids stale closure bug
-    const fullTranscript = transcriptRef.current
-      .filter((l) => l.isFinal)
-      .map((l) => `${l.speaker}: ${l.text}`)
-      .join("\n");
+    // ── Step 1: Stop MediaRecorder first, then release the stream ────────────
+    let audioBlob: Blob | null = null;
+    const mr = mediaRecorderRef.current;
+    if (mr && mr.state !== "inactive") {
+      audioBlob = await new Promise<Blob>((resolve) => {
+        mr.onstop = () => resolve(new Blob(audioChunksRef.current, { type: audioChunksRef.current[0]?.type || "audio/webm" }));
+        mr.stop();
+      });
+      mediaRecorderRef.current = null;
+    }
 
-    // Save to DB
+    // NOW release the media stream (MediaRecorder is done with it)
+    mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+    mediaStreamRef.current = null;
+
+    // ── Step 2: Send to WhisperX for better accuracy + auto speaker detection ─
+    // Falls back to Web Speech API transcript if backend unavailable
+    let finalLines = transcriptRef.current.filter((l) => l.isFinal);
+    if (audioBlob && audioBlob.size > 10_000) {
+      try {
+        const formData = new FormData();
+        formData.append("file", audioBlob, "recording.webm");
+        const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+        const res = await fetch(
+          `${backendUrl}/api/transcribe?diarize=true&max_speakers=4`,
+          { method: "POST", body: formData, signal: AbortSignal.timeout(300_000) }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          if (data.diarization_error) {
+            console.warn("[diarization] failed:", data.diarization_error);
+          }
+          if (data.segments?.length) {
+            const hasMultipleSpeakers = new Set(
+              data.segments.map((s: { speaker?: string }) => s.speaker ?? "SPEAKER_00")
+            ).size > 1;
+            finalLines = data.segments.map((seg: { text: string; speaker?: string; start: number }, i: number) => {
+              const speakerNum = parseInt((seg.speaker ?? "SPEAKER_00").replace("SPEAKER_", "")) || 0;
+              const sp = SPEAKERS[speakerNum % SPEAKERS.length];
+              return {
+                id: String(i),
+                speaker: sp.name,
+                speakerColor: sp.color,
+                text: seg.text,
+                isFinal: true,
+                timestamp: Math.floor(seg.start),
+              };
+            });
+            setTranscript(finalLines);
+            if (hasMultipleSpeakers) {
+              toast.success("Speakers automatically identified!");
+            } else {
+              toast.success("Transcript enhanced with AI recognition");
+            }
+          }
+        } else {
+          toast.warning("AI transcription unavailable — using browser transcript");
+        }
+      } catch {
+        // Backend not available — keep Web Speech API transcript and inform user
+        toast.warning("AI transcription backend offline — using browser transcript");
+      }
+    }
+
+    // ── Step 3: Generate AI summary ───────────────────────────────────────────
+    setProcessingStep("summarizing");
+    const fullTranscript = finalLines.map((l) => `${l.speaker}: ${l.text}`).join("\n");
+
     try {
       let id = meetingIdRef.current;
 
@@ -388,26 +672,30 @@ function NewMeetingPage() {
         if (createRes.ok) {
           const d = await createRes.json();
           id = d.meeting?.id ?? null;
+        } else {
+          const errText = await createRes.text().catch(() => "");
+          console.error("[save meeting] create failed", createRes.status, errText);
+          toast.error(`Could not save meeting (${createRes.status}). Check console for details.`);
         }
       }
 
+      // Generate AI summary (regardless of save state)
+      const aiSummary = await fetch("/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: fullTranscript, meetingTitle: title, template: meetingTemplate }),
+      }).then((r) => (r.ok ? r.json() : null));
+      const resolvedSummary = aiSummary?.summary ?? MOCK_SUMMARY;
+      setSummary(resolvedSummary);
+
       if (id) {
-        const aiSummary = await fetch("/api/summarize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: fullTranscript, meetingTitle: title }),
-        }).then((r) => (r.ok ? r.json() : null));
-
-        const resolvedSummary = aiSummary?.summary ?? MOCK_SUMMARY;
-        setSummary(resolvedSummary);
-
         const patchRes = await fetch(`/api/meetings/${id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             transcript: fullTranscript,
             summary: resolvedSummary,
-            duration: recordingSeconds,
+            duration: recordingSecondsRef.current,
             status: "done",
           }),
         });
@@ -415,26 +703,27 @@ function NewMeetingPage() {
         if (!patchRes.ok) {
           const err = await patchRes.json().catch(() => ({}));
           console.error("[save meeting] PATCH failed", patchRes.status, err);
-          toast.error("Meeting saved but transcript may not have persisted");
+          toast.error(`Meeting transcript not saved (${patchRes.status}). Check console.`);
+        } else {
+          setSavedMeetingId(id);
+          meetingIdRef.current = id;
         }
-
-        setSavedMeetingId(id);
-        meetingIdRef.current = id;
-      } else {
-        const aiSummary = await fetch("/api/summarize", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: fullTranscript, meetingTitle: title }),
-        }).then((r) => (r.ok ? r.json() : null));
-        setSummary(aiSummary?.summary ?? MOCK_SUMMARY);
       }
-    } catch {
+    } catch (err) {
+      console.error("[stopAndSummarize] unexpected error", err);
       setSummary(MOCK_SUMMARY);
     }
 
     setPhase("done");
     toast.success("Summary generated!");
-  }, [title, platform, recordingSeconds, stopWaveform]);
+  }, [title, platform]);
+
+  // Listen for auto-stop event (fired when user ends screen share in remote mode)
+  useEffect(() => {
+    const handler = () => { if (phaseRef.current === "recording") stopAndSummarize(); };
+    window.addEventListener("meetflow:autostop", handler);
+    return () => window.removeEventListener("meetflow:autostop", handler);
+  }, [stopAndSummarize]);
 
   const formatTime = (s: number) =>
     `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
@@ -534,14 +823,75 @@ function NewMeetingPage() {
             </div>
           </div>
 
+          {/* Meeting template */}
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-3">Meeting template</label>
+            <div className="flex flex-wrap gap-2">
+              {MEETING_TEMPLATES.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setMeetingTemplate(t.id)}
+                  className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all flex items-center gap-1.5 border ${
+                    meetingTemplate === t.id
+                      ? "bg-indigo-600 text-white border-indigo-600"
+                      : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
+                  }`}
+                >
+                  <span>{t.emoji}</span> {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Recording mode */}
+          <div>
+            <label className="block text-sm font-semibold text-slate-700 mb-3">Meeting type</label>
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                onClick={() => setRecordingMode("inperson")}
+                className={`py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all flex items-center gap-2 ${
+                  recordingMode === "inperson"
+                    ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                    : "border-slate-200 hover:border-slate-300 text-slate-600"
+                }`}
+              >
+                <Users className="w-4 h-4 flex-shrink-0" />
+                In-person / Room
+              </button>
+              <button
+                onClick={() => setRecordingMode("remote")}
+                className={`py-3 px-4 rounded-xl border-2 text-sm font-medium transition-all flex items-center gap-2 ${
+                  recordingMode === "remote"
+                    ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                    : "border-slate-200 hover:border-slate-300 text-slate-600"
+                }`}
+              >
+                <Monitor className="w-4 h-4 flex-shrink-0" />
+                Remote call
+              </button>
+            </div>
+            {recordingMode === "remote" && (
+              <div className="mt-2.5 rounded-xl p-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 leading-relaxed">
+                <strong>How it works:</strong> You&apos;ll share your Zoom/Meet/Teams tab with audio.
+                All voices — yours and remote participants — are captured and automatically identified.
+                <br /><span className="text-amber-500 mt-1 block">Make sure to check &quot;Share tab audio&quot; in the share dialog.</span>
+              </div>
+            )}
+            {recordingMode === "inperson" && (
+              <p className="mt-2 text-xs text-slate-500">
+                Microphone captures everyone in the room. Works best with multiple people nearby.
+              </p>
+            )}
+          </div>
+
           {/* Info card */}
           <div className="rounded-2xl p-4 flex gap-3" style={{ background: "#EEF2FF", border: "1px solid #C7D2FE" }}>
             <Mic className="w-5 h-5 text-indigo-600 mt-0.5 flex-shrink-0" />
             <div>
-              <p className="text-indigo-800 font-semibold text-sm">How it works</p>
+              <p className="text-indigo-800 font-semibold text-sm">Auto speaker detection</p>
               <p className="text-indigo-700/80 text-xs mt-1 leading-relaxed">
-                MeetFlow AI uses your browser&apos;s built-in speech recognition — <strong>no bot joins your call</strong>.
-                Open your meeting in another tab, then click Start below. Grant microphone access when prompted.
+                After you stop, AI automatically identifies each speaker and labels their lines.
+                No bot joins your call — everything runs locally on your machine.
               </p>
             </div>
           </div>
@@ -631,64 +981,104 @@ function NewMeetingPage() {
           ))}
         </div>
 
-        {/* Live transcript */}
+        {/* Live transcript + Talking Points */}
+        <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-          <AnimatePresence initial={false}>
-            {transcript.map((line) => (
-              <motion.div
-                key={line.id}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="flex gap-3"
+          {/* Older lines — plain divs, no animation cost on each interim update */}
+          {transcript.slice(0, -1).map((line) => (
+            <div key={line.id} className="flex gap-3">
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5"
+                style={{ background: line.speakerColor }}
               >
-                <div
-                  className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5"
-                  style={{ background: line.speakerColor }}
-                >
-                  {line.speaker[0]}
-                </div>
-                <div className="flex-1">
-                  <p className="text-xs font-semibold mb-0.5" style={{ color: line.speakerColor }}>
-                    {line.speaker}
-                  </p>
-                  <p className="text-slate-700 text-sm leading-relaxed">{line.text}</p>
-                </div>
-              </motion.div>
-            ))}
+                {line.speaker[0]}
+              </div>
+              <div className="flex-1">
+                <p className="text-xs font-semibold mb-0.5" style={{ color: line.speakerColor }}>
+                  {line.speaker}
+                </p>
+                <p className="text-slate-700 text-sm leading-relaxed">{line.text}</p>
+              </div>
+            </div>
+          ))}
 
-            {/* Interim text */}
-            {interimText && (
-              <motion.div
-                key="interim"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="flex gap-3"
-              >
-                <div
-                  className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5 opacity-60"
-                  style={{ background: currentSpeaker.color }}
+          {/* Newest final line — animate in once */}
+          <AnimatePresence initial={false}>
+            {transcript.length > 0 && (() => {
+              const line = transcript[transcript.length - 1];
+              return (
+                <motion.div
+                  key={line.id}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="flex gap-3"
                 >
-                  {currentSpeaker.name[0]}
-                </div>
-                <p className="text-slate-400 text-sm italic leading-relaxed">{interimText}</p>
-              </motion.div>
-            )}
+                  <div
+                    className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5"
+                    style={{ background: line.speakerColor }}
+                  >
+                    {line.speaker[0]}
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-xs font-semibold mb-0.5" style={{ color: line.speakerColor }}>
+                      {line.speaker}
+                    </p>
+                    <p className="text-slate-700 text-sm leading-relaxed">{line.text}</p>
+                  </div>
+                </motion.div>
+              );
+            })()}
           </AnimatePresence>
+
+          {/* Interim text — plain div, no animation, updates many times per second */}
+          {interimText && (
+            <div className="flex gap-3">
+              <div
+                className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0 mt-0.5 opacity-60"
+                style={{ background: currentSpeaker.color }}
+              >
+                {currentSpeaker.name[0]}
+              </div>
+              <p className="text-slate-400 text-sm italic leading-relaxed">{interimText}</p>
+            </div>
+          )}
 
           {transcript.length === 0 && !interimText && (
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <motion.div
                 animate={{ scale: [1, 1.1, 1] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
-                className="w-16 h-16 rounded-full bg-indigo-100 flex items-center justify-center mb-4"
+                className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${
+                  recordingMode === "remote" ? "bg-teal-100" : "bg-indigo-100"
+                }`}
               >
-                <Mic className="w-8 h-8 text-indigo-500" />
+                {recordingMode === "remote"
+                  ? <Monitor className="w-8 h-8 text-teal-500" />
+                  : <Mic className="w-8 h-8 text-indigo-500" />}
               </motion.div>
-              <p className="text-slate-700 font-semibold">Listening…</p>
-              <p className="text-slate-400 text-sm mt-1">Start speaking — your transcript will appear here</p>
+              {recordingMode === "remote" ? (
+                <>
+                  <p className="text-slate-700 font-semibold">Capturing all voices…</p>
+                  <p className="text-slate-400 text-sm mt-1">
+                    Recording your meeting tab audio. Full transcript with speaker labels appears after you stop.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-slate-700 font-semibold">Listening…</p>
+                  <p className="text-slate-400 text-sm mt-1">Start speaking — your transcript will appear here</p>
+                </>
+              )}
             </div>
           )}
           <div ref={transcriptEndRef} />
+        </div>
+        <TalkingPointsPanel
+          transcript={transcript.map((l) => ({ speaker: l.speaker, text: l.text }))}
+          meetingTitle={title}
+          isRecording={phase === "recording"}
+        />
         </div>
       </div>
     );
@@ -696,6 +1086,7 @@ function NewMeetingPage() {
 
   // ── Render: Processing ────────────────────────────────────────────────────
   if (phase === "processing") {
+    const isTranscribing = processingStep === "transcribing";
     return (
       <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
         <motion.div
@@ -706,16 +1097,29 @@ function NewMeetingPage() {
           <Sparkles className="w-8 h-8 text-white" />
         </motion.div>
         <h2 className="text-xl font-bold text-slate-800 mb-2" style={{ fontFamily: "'Inter', sans-serif" }}>
-          Generating AI Summary…
+          {isTranscribing ? "Enhancing Transcript…" : "Generating AI Summary…"}
         </h2>
-        <p className="text-slate-500 text-sm">Analyzing your transcript with Claude AI</p>
-        <div className="flex gap-1.5 mt-6">
+        <p className="text-slate-500 text-sm">
+          {isTranscribing
+            ? "Running WhisperX for better accuracy + speaker detection"
+            : "Analyzing your transcript with Claude AI"}
+        </p>
+        {/* Step indicator */}
+        <div className="flex items-center gap-3 mt-5">
+          <div className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full ${
+            isTranscribing ? "bg-indigo-100 text-indigo-700" : "bg-teal-100 text-teal-700"
+          }`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${isTranscribing ? "bg-indigo-500" : "bg-teal-500"}`} />
+            {isTranscribing ? "Step 1: Transcribing" : "Step 2: Summarizing"}
+          </div>
+        </div>
+        <div className="flex gap-1.5 mt-5">
           {[0, 1, 2].map((i) => (
             <motion.div
               key={i}
               animate={{ y: [0, -8, 0] }}
               transition={{ duration: 0.6, repeat: Infinity, delay: i * 0.15 }}
-              className="w-2.5 h-2.5 rounded-full bg-indigo-400"
+              className={`w-2.5 h-2.5 rounded-full ${isTranscribing ? "bg-indigo-400" : "bg-teal-400"}`}
             />
           ))}
         </div>

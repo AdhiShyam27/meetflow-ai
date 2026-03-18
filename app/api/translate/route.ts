@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 import { rateLimit } from "@/lib/rate-limiter";
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+import { chatCompletion, resolveLLMConfig, FAST_MODEL } from "@/lib/llm";
 
 // BCP-47 codes so the recording page can switch speech recognition language
 const LANG_TO_CODE: Record<string, string> = {
@@ -23,7 +21,6 @@ const FALLBACK = { translated: "", wasTranslated: false, detectedLanguage: "Engl
 
 export async function POST(request: NextRequest) {
   // ── Rate limiting by IP — no Supabase round-trip needed on the hot path ──
-  // Only non-ASCII text reaches this route (ASCII is short-circuited client-side).
   const ip =
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
     request.headers.get("x-real-ip") ??
@@ -39,22 +36,25 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
   const text: unknown = body?.text;
 
-  // ── Input validation ──────────────────────────────────────────────────────
   if (typeof text !== "string") {
     return NextResponse.json({ ...FALLBACK, translated: "" });
   }
 
-  // Clamp to 2000 chars — more than enough for a single speech segment
   const safeText = text.slice(0, 2000);
 
   if (!safeText.trim()) {
     return NextResponse.json({ ...FALLBACK, translated: safeText });
   }
 
+  const config = await resolveLLMConfig();
+  if (!config) {
+    return NextResponse.json({ ...FALLBACK, translated: safeText });
+  }
+
   try {
-    const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 512,
+    const translateConfig = { ...config, model: FAST_MODEL };
+
+    const response = await chatCompletion(translateConfig, {
       messages: [
         {
           role: "user",
@@ -71,22 +71,23 @@ Where <LanguageName> is the full English name (e.g. Spanish, Hindi, French) and 
 Text: ${safeText}`,
         },
       ],
+      maxTokens: 512,
+      stream: false,
     });
 
-    const response = (message.content[0] as { type: string; text: string }).text.trim();
+    const trimmed = response.trim();
 
-    if (response.startsWith("ENGLISH:")) {
+    if (trimmed.startsWith("ENGLISH:")) {
       return NextResponse.json({
-        translated: response.slice("ENGLISH:".length).trim(),
+        translated: trimmed.slice("ENGLISH:".length).trim(),
         wasTranslated: false,
         detectedLanguage: "English",
         languageCode: "en-US",
       });
     }
 
-    if (response.startsWith("TRANSLATED:")) {
-      // Format: TRANSLATED:Spanish:es-ES: <translated text>
-      const rest = response.slice("TRANSLATED:".length);
+    if (trimmed.startsWith("TRANSLATED:")) {
+      const rest = trimmed.slice("TRANSLATED:".length);
       const firstColon = rest.indexOf(":");
       const secondColon = rest.indexOf(":", firstColon + 1);
       if (firstColon !== -1 && secondColon !== -1) {

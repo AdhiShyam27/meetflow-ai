@@ -5,8 +5,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { usePathname, useRouter } from "next/navigation";
 import {
   Zap, Settings, LogOut, ChevronLeft, ChevronRight, Plus,
-  Sparkles, Search, FileText, Users, BarChart2, Archive,
-  Workflow, MessageSquare, Gift, UserPlus, Mic, Upload,
+  Sparkles, FileText, BarChart2,
+  Workflow, Gift, UserPlus, Mic, Upload, StickyNote,
 } from "lucide-react";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
@@ -16,17 +16,14 @@ interface SidebarProps {
 }
 
 const NAV_ITEMS = [
-  { label: "Search", href: "/dashboard", icon: Search, shortcut: "⌘K" },
   { label: "My Meetings", href: "/dashboard", icon: FileText },
   { label: "New Recording", href: "/dashboard/new", icon: Mic },
   { label: "Upload File", href: "/dashboard/upload", icon: Upload },
-  { label: "Shared with Me", href: "/dashboard", icon: Users },
+  { label: "My Notes", href: "/dashboard/notes", icon: StickyNote },
+  { label: "Analytics", href: "/dashboard/analytics", icon: BarChart2 },
+  { label: "My Workflows", href: "/dashboard/settings#workflows", icon: Workflow },
   { label: "AI Tools", href: "/dashboard", icon: Sparkles },
   { label: "Settings", href: "/dashboard/settings", icon: Settings },
-  { label: "Archive", href: "/dashboard", icon: Archive },
-  { label: "Reporting", href: "/dashboard", icon: BarChart2 },
-  { label: "My Workflows", href: "/dashboard", icon: Workflow },
-  { label: "AI Chat", href: "/dashboard", icon: MessageSquare },
 ] as const;
 
 const MAX_MEETINGS = 10;
@@ -79,7 +76,10 @@ export default function Sidebar({ user }: SidebarProps) {
     if (label === "My Meetings" && pathname === "/dashboard") return true;
     if (label === "New Recording" && pathname === "/dashboard/new") return true;
     if (label === "Upload File" && pathname === "/dashboard/upload") return true;
+    if (label === "My Notes" && pathname === "/dashboard/notes") return true;
+    if (label === "Analytics" && pathname === "/dashboard/analytics") return true;
     if (label === "Settings" && pathname.startsWith("/dashboard/settings")) return true;
+    if (label === "My Workflows" && pathname.startsWith("/dashboard/settings")) return true;
     return false;
   };
 
@@ -202,7 +202,7 @@ export default function Sidebar({ user }: SidebarProps) {
                 )}
               </AnimatePresence>
               {"shortcut" in item && !collapsed && (
-                <span className="text-slate-300 text-xs font-normal flex-shrink-0">{item.shortcut}</span>
+                <span className="text-slate-300 text-xs font-normal flex-shrink-0">{String(item.shortcut)}</span>
               )}
             </a>
           );
