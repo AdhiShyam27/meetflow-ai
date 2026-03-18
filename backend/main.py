@@ -63,13 +63,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_EXTRA_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        # Add your Vercel URL here if calling from production:
-        # "https://meetflow-ai.vercel.app",
+        "https://meetflow-ai.vercel.app",
+        *_EXTRA_ORIGINS,
     ],
     allow_credentials=True,
     allow_methods=["*"],

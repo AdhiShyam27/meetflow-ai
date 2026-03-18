@@ -47,11 +47,10 @@ class SpeakerDiarizer:
 
         self._pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
-            use_auth_token=config.HF_TOKEN,
+            token=config.HF_TOKEN,
         )
-        # pyannote 4.x: use_auth_token is still accepted but we also set env var as fallback
 
-        device = torch.device(config.DEVICE if config.DEVICE != "cpu" else "cpu")
+        device = torch.device(config.DIARIZE_DEVICE)
         self._pipeline.to(device)
 
         elapsed = time.perf_counter() - t0

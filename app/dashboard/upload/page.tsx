@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -50,11 +50,11 @@ export default function UploadPage() {
   const [maxSpeakers, setMaxSpeakers] = useState<number | undefined>(undefined);
 
   // Check if backend is reachable when page mounts
-  useState(() => {
+  useEffect(() => {
     checkBackendHealth()
       .then(() => setBackendOnline(true))
       .catch(() => setBackendOnline(false));
-  });
+  }, []);
 
   // ── File handling ─────────────────────────────────────────────────────────
 
@@ -189,12 +189,23 @@ export default function UploadPage() {
           className="mb-6 rounded-2xl p-4 flex items-start gap-3 bg-amber-50 border border-amber-200"
         >
           <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
-          <div>
+          <div className="flex-1">
             <p className="text-amber-800 font-semibold text-sm">Python backend not running</p>
             <p className="text-amber-700 text-xs mt-0.5">
               Start it with: <code className="bg-amber-100 px-1 rounded">cd backend && ./start.sh</code>
             </p>
           </div>
+          <button
+            onClick={() => {
+              setBackendOnline(null);
+              checkBackendHealth()
+                .then(() => setBackendOnline(true))
+                .catch(() => setBackendOnline(false));
+            }}
+            className="text-xs font-semibold text-amber-700 hover:text-amber-900 px-2 py-1 rounded-lg hover:bg-amber-100 transition-colors flex-shrink-0"
+          >
+            Retry
+          </button>
         </motion.div>
       )}
 

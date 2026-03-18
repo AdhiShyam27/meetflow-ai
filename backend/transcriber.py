@@ -43,7 +43,7 @@ class TranscriptionService:
         logger.info(
             "Loading WhisperX (%s) on %s [%s] …",
             config.WHISPER_MODEL,
-            config.DEVICE,
+            config.WHISPER_DEVICE,
             config.COMPUTE_TYPE,
         )
         t0 = time.perf_counter()
@@ -52,7 +52,7 @@ class TranscriptionService:
 
         self._whisperx_model = whisperx.load_model(
             config.WHISPER_MODEL,
-            device=config.DEVICE,
+            device=config.WHISPER_DEVICE,
             compute_type=config.COMPUTE_TYPE,
             language=config.LANGUAGE,
             asr_options={
@@ -73,7 +73,7 @@ class TranscriptionService:
 
             logger.info("Loading alignment model for '%s' …", language)
             model_a, metadata = whisperx.load_align_model(
-                language_code=language, device=config.DEVICE
+                language_code=language, device=config.WHISPER_DEVICE
             )
             self._align_models[language] = (model_a, metadata)
         return self._align_models[language]
@@ -116,7 +116,7 @@ class TranscriptionService:
             t0 = time.perf_counter()
             result = whisperx.align(
                 result["segments"], model_a, metadata, audio,
-                device=config.DEVICE, return_char_alignments=False,
+                device=config.WHISPER_DEVICE, return_char_alignments=False,
             )
             timings["alignment"] = time.perf_counter() - t0
             logger.info("Alignment done in %.1fs", timings["alignment"])
@@ -125,7 +125,10 @@ class TranscriptionService:
 
         # Step 3 — Diarization ────────────────────────────────────────────────
         speakers = []
+        diarization_error: str | None = None
         try:
+            if not config.HF_TOKEN:
+                raise RuntimeError("HF_TOKEN not set — speaker diarization disabled")
             annotation = self.diarizer.diarize(
                 audio_path, min_speakers=min_speakers, max_speakers=max_speakers
             )
@@ -134,13 +137,19 @@ class TranscriptionService:
             timings["diarization"] = time.perf_counter() - t0
             logger.info("Speaker assignment done in %.1fs", timings["diarization"])
             speakers = self.diarizer.get_speaker_stats(annotation, total_duration)
+            unique_speakers = {s["id"] for s in speakers}
+            logger.info("Identified %d unique speaker(s): %s", len(unique_speakers), unique_speakers)
         except Exception as exc:
-            logger.warning("Diarization failed (%s), continuing without speaker labels", exc)
+            diarization_error = str(exc)
+            logger.error("Diarization failed: %s", exc, exc_info=True)
 
         self._flush_device_cache()
         logger.info("Pipeline timings: %s", {k: f"{v:.1f}s" for k, v in timings.items()})
 
-        return self._format_result(result, language, total_duration, speakers)
+        result_dict = self._format_result(result, language, total_duration, speakers)
+        if diarization_error:
+            result_dict["diarization_error"] = diarization_error
+        return result_dict
 
     # ── Quick transcription (no diarization) ─────────────────────────────────
 
@@ -239,7 +248,7 @@ class TranscriptionService:
             "whisper": {
                 "model": config.WHISPER_MODEL,
                 "loaded": self.is_loaded,
-                "device": config.DEVICE,
+                "device": config.WHISPER_DEVICE,
                 "compute_type": config.COMPUTE_TYPE,
             },
             "diarization": {

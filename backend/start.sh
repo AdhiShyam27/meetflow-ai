@@ -37,7 +37,7 @@ echo "✅  Python $PY_VERSION (arm64)"
 
 # ── ffmpeg check ──────────────────────────────────────────────────────────────
 FFMPEG_FOUND=false
-for f in ffmpeg /Users/adhishyam/anaconda3/bin/ffmpeg /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg; do
+for f in ffmpeg /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /usr/bin/ffmpeg; do
   if command -v "$f" &>/dev/null 2>&1 || [ -x "$f" ]; then
     FFMPEG_FOUND=true
     FFMPEG_BIN=$(command -v "$f" 2>/dev/null || echo "$f")
@@ -83,15 +83,15 @@ if ! python -c "import torch; assert torch.__version__ >= '2.8'" 2>/dev/null; th
   pip install --quiet "torch==2.8.0" "torchaudio==2.8.0"
 fi
 
-# numpy <2 required for torch 2.8 compatibility
-pip install --quiet "numpy<2"
-
 # Core deps
 pip install --quiet fastapi "uvicorn[standard]" python-multipart python-dotenv \
   websockets psutil soundfile pydub requests
 
-# Transcription
-pip install --quiet "faster-whisper==1.1.0"
+# numpy 2.x required by whisperx 3.8.1 and pyannote-core 6.x (torch 2.8 supports it)
+pip install --quiet "numpy>=2.1.0"
+
+# Transcription — whisperx 3.8.1 requires faster-whisper>=1.1.1
+pip install --quiet "faster-whisper>=1.1.1"
 
 # WhisperX (requires torch>=2.8)
 if ! python -c "import whisperx" 2>/dev/null; then

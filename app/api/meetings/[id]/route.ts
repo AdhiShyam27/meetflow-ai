@@ -92,6 +92,10 @@ export async function PATCH(
     if (body.notes !== undefined && !Array.isArray(body.notes)) {
       return NextResponse.json({ error: "Invalid notes" }, { status: 400 });
     }
+    const ALLOWED_STATUSES = ["recording", "processing", "done", "error"];
+    if (body.status !== undefined && !ALLOWED_STATUSES.includes(body.status)) {
+      return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+    }
 
     const { data, error } = await supabase
       .from("meetings")

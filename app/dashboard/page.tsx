@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic2, Clock, Sparkles, Plus, Search,
-  MoreHorizontal, Calendar, ChevronRight, Zap, Trash2,
+  Calendar, ChevronRight, Zap, Trash2,
   ExternalLink, Radio, FileText,
 } from "lucide-react";
 import Link from "next/link";
@@ -20,6 +20,7 @@ interface Meeting {
   created_at: string;
   transcript?: string;
   summary?: Record<string, unknown> | null;
+  _foundInTranscript?: boolean;
 }
 
 interface CalendarEvent {
@@ -160,9 +161,20 @@ export default function DashboardPage() {
     }
   };
 
-  const filtered = meetings.filter((m) =>
-    m.title.toLowerCase().includes(search.toLowerCase())
-  );
+  const lowerSearch = search.toLowerCase();
+  const filtered = meetings
+    .filter(
+      (m) =>
+        m.title.toLowerCase().includes(lowerSearch) ||
+        m.transcript?.toLowerCase().includes(lowerSearch)
+    )
+    .map((m) => ({
+      ...m,
+      _foundInTranscript:
+        search.trim().length > 0 &&
+        !m.title.toLowerCase().includes(lowerSearch) &&
+        !!m.transcript?.toLowerCase().includes(lowerSearch),
+    }));
 
   const totalMinutes = Math.floor(meetings.reduce((s, m) => s + (m.duration || 0), 0) / 60);
   const totalWords = meetings.reduce((s, m) => {
@@ -422,6 +434,11 @@ export default function DashboardPage() {
                             <Sparkles className="w-3 h-3" /> AI Summary
                           </span>
                         )}
+                        {meeting._foundInTranscript && (
+                          <span className="flex items-center gap-0.5 text-xs text-amber-600 font-medium bg-amber-50 px-1.5 py-0.5 rounded-full flex-shrink-0">
+                            <Search className="w-3 h-3" /> In transcript
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-3 text-xs text-slate-400">
                         <span className="font-medium" style={{ color: plt.color }}>
@@ -461,12 +478,6 @@ export default function DashboardPage() {
                         title="Delete meeting"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        className="text-slate-300 hover:text-slate-600 transition-colors"
-                        onClick={(e) => e.preventDefault()}
-                      >
-                        <MoreHorizontal className="w-4 h-4" />
                       </button>
                       <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-indigo-400 transition-colors" />
                     </div>

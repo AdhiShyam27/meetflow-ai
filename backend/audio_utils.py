@@ -14,6 +14,8 @@ import config
 logger = logging.getLogger(__name__)
 
 FFMPEG_CMD = config.FFMPEG_PATH
+# ffprobe lives next to ffmpeg (same conda install directory)
+FFPROBE_CMD = FFMPEG_CMD.replace("ffmpeg", "ffprobe") if FFMPEG_CMD != "ffmpeg" else "ffprobe"
 
 
 def _run_ffmpeg(*args: str) -> subprocess.CompletedProcess:
@@ -57,7 +59,7 @@ def get_audio_duration(path: str) -> float:
     """Return audio duration in seconds using ffprobe."""
     result = subprocess.run(
         [
-            "ffprobe", "-v", "error",
+            FFPROBE_CMD, "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
             path,

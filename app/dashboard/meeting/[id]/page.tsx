@@ -14,19 +14,41 @@ import { toast } from "sonner";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface ActionItem { task: string; owner: string | null; dueDate: string | null; }
+interface ActionItem {
+  task: string; owner: string | null; dueDate: string | null;
+  priority?: "high" | "medium" | "low"; completed?: boolean;
+}
+interface WorkflowRunResult { status: string; error?: string; at: string; }
 interface Meeting {
   id: string; title: string; platform: string; duration: number;
   status: string; created_at: string; transcript?: string;
   summary?: {
     overview?: string; keyPoints?: string[]; actionItems?: ActionItem[];
     decisions?: string[]; questions?: string[];
+    speakerNames?: Record<string, string>;
+    sentiment?: { label: "positive" | "neutral" | "negative"; score: number };
+    healthScore?: number;
+    topics?: string[];
+    followUpEmail?: { subject: string; body: string };
+    nextAgenda?: string[];
   } | null;
   notes?: Note[];
+  workflow_runs?: Record<string, WorkflowRunResult>;
+}
+interface WorkflowConfig {
+  slack: { enabled: boolean; webhookUrl: string };
+  email: { enabled: boolean; recipients: string };
+  notion: { enabled: boolean; apiKey: string; databaseId: string };
+  linear: { enabled: boolean; apiKey: string; teamId: string };
+  webhook: { enabled: boolean; url: string };
 }
 interface ChatMessage { role: "user" | "assistant"; content: string; }
 interface Note { id: string; text: string; createdAt: string; }
 interface TranscriptLine { idx: number; speaker: string; text: string; }
+interface CustomPrompt { id: string; label: string; prompt: string; }
+interface SpeakerWordStat {
+  name: string; words: number; pct: number; color: string; initials: string;
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -50,11 +72,17 @@ const PROMPT_TEMPLATES = [
   { icon: "📊", label: "Prepare slides", prompt: "Create a structured outline for a presentation based on the key points from this meeting. Include slide titles and bullet points." },
 ];
 
-const WORKFLOWS = [
-  { icon: "💬", name: "Post-meeting summary to Slack", desc: "Auto-send summary to your Slack channel after each meeting", active: false },
-  { icon: "📧", name: "Action items to email", desc: "Email action items to participants after meeting ends", active: true },
-  { icon: "📝", name: "Meeting notes to Notion", desc: "Save formatted notes to a Notion page automatically", active: false },
-  { icon: "✅", name: "Tasks to Linear", desc: "Create Linear tickets from extracted action items", active: false },
+const WORKFLOW_DEFS: Array<{
+  key: keyof WorkflowConfig;
+  icon: string;
+  name: string;
+  desc: string;
+}> = [
+  { key: "slack",   icon: "💬", name: "Slack",          desc: "Post meeting summary to a Slack channel" },
+  { key: "email",   icon: "📧", name: "Email",           desc: "Send summary to recipients via Gmail" },
+  { key: "notion",  icon: "📝", name: "Notion",          desc: "Save notes and action items to Notion" },
+  { key: "linear",  icon: "✅", name: "Linear",          desc: "Create Linear issues from action items" },
+  { key: "webhook", icon: "🔗", name: "Custom Webhook",  desc: "POST meeting data to any HTTP endpoint" },
 ];
 
 const TABS = [
@@ -104,6 +132,26 @@ function getSpeakerStats(lines: TranscriptLine[]) {
       initials: name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2),
     }));
 }
+
+function getSpeakerWordStats(lines: TranscriptLine[]): SpeakerWordStat[] {
+  const wordCounts: Record<string, number> = {};
+  lines.forEach((l) => {
+    const words = l.text.trim().split(/\s+/).filter(Boolean).length;
+    wordCounts[l.speaker] = (wordCounts[l.speaker] ?? 0) + words;
+  });
+  const totalWords = Object.values(wordCounts).reduce((a, b) => a + b, 0) || 1;
+  return Object.entries(wordCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, words], i) => ({
+      name,
+      words,
+      pct: words / totalWords,
+      color: SPEAKER_COLORS[i % SPEAKER_COLORS.length],
+      initials: name.split(" ").map((w) => w[0]).join("").toUpperCase().slice(0, 2),
+    }));
+}
+
+const CUSTOM_PROMPTS_KEY = "meetflow_custom_prompts";
 
 // ── SVG Donut Chart ───────────────────────────────────────────────────────────
 
@@ -221,7 +269,29 @@ export default function MeetingPage() {
   const [googleConnected, setGoogleConnected] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
 
-  // Load meeting
+  // Speaker name editing (Feature 4)
+  const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
+  const [editingSpeakerValue, setEditingSpeakerValue] = useState("");
+
+  // Export (Feature 5) — no extra state needed beyond meeting data
+
+  // Custom AI prompts (Feature 7)
+  const [customPrompts, setCustomPrompts] = useState<CustomPrompt[]>([]);
+  const [showAddPrompt, setShowAddPrompt] = useState(false);
+  const [newPromptLabel, setNewPromptLabel] = useState("");
+  const [newPromptText, setNewPromptText] = useState("");
+
+  // Email team modal (Feature 8)
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailRecipients, setEmailRecipients] = useState("");
+  const [sendingTeamEmail, setSendingTeamEmail] = useState(false);
+
+  // Workflows
+  const [workflowConfig, setWorkflowConfig] = useState<WorkflowConfig | null>(null);
+  const [runningWorkflow, setRunningWorkflow] = useState<Record<string, boolean>>({});
+  const [runningAll, setRunningAll] = useState(false);
+
+  // Load meeting + custom prompts from localStorage
   useEffect(() => {
     async function load() {
       try {
@@ -236,6 +306,13 @@ export default function MeetingPage() {
     }
     load();
     fetch("/api/google/status").then((r) => r.json()).then((d) => setGoogleConnected(d.connected)).catch(() => {});
+    fetch("/api/workflows/config").then((r) => r.ok ? r.json() : null).then((cfg: WorkflowConfig | null) => { if (cfg) setWorkflowConfig(cfg); }).catch(() => {});
+
+    // Load custom prompts from localStorage
+    try {
+      const stored = localStorage.getItem(CUSTOM_PROMPTS_KEY);
+      if (stored) setCustomPrompts(JSON.parse(stored) as CustomPrompt[]);
+    } catch { /* ignore */ }
   }, [id]);
 
   // Auto-scroll chat
@@ -354,6 +431,22 @@ export default function MeetingPage() {
     finally { setRegenerating(false); }
   };
 
+  const toggleActionItem = async (idx: number) => {
+    if (!meeting?.summary?.actionItems) return;
+    const updated = meeting.summary.actionItems.map((item, i) =>
+      i === idx ? { ...item, completed: !item.completed } : item
+    );
+    const updatedSummary = { ...meeting.summary, actionItems: updated };
+    setMeeting((m) => m ? { ...m, summary: updatedSummary } : m);
+    try {
+      await fetch(`/api/meetings/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ summary: updatedSummary }),
+      });
+    } catch { /* non-critical */ }
+  };
+
   const addNote = async () => {
     if (!noteInput.trim()) return;
     const newNote: Note = { id: String(Date.now()), text: noteInput.trim(), createdAt: new Date().toISOString() };
@@ -388,12 +481,371 @@ export default function MeetingPage() {
     else toast.error("Failed to delete meeting");
   };
 
+  // ── Feature 4: Speaker name editing ──────────────────────────────────────
+  const saveSpeakerName = async (original: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === original) { setEditingSpeaker(null); return; }
+    const updatedNames = {
+      ...(meeting?.summary?.speakerNames ?? {}),
+      [original]: trimmed,
+    };
+    const updatedSummary = { ...(meeting?.summary ?? {}), speakerNames: updatedNames };
+    setMeeting((m) => m ? { ...m, summary: updatedSummary } : m);
+    setEditingSpeaker(null);
+    try {
+      await fetch(`/api/meetings/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ summary: updatedSummary }),
+      });
+      toast.success(`Speaker renamed to "${trimmed}"`);
+    } catch { toast.error("Failed to save speaker name"); }
+  };
+
+  // ── Export helpers ────────────────────────────────────────────────────────
+  const [showExportMenu, setShowExportMenu] = useState(false);
+
+  const buildTextContent = () => {
+    if (!meeting) return "";
+    const date = new Date(meeting.created_at).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+    const s = meeting.summary;
+    const lines: string[] = [
+      `MEETING SUMMARY — ${meeting.title}`,
+      `Date: ${date}   Duration: ${formatDuration(meeting.duration || 0)}   Platform: ${plt.label}`,
+      "",
+    ];
+    if (s?.overview) { lines.push("OVERVIEW", s.overview, ""); }
+    if (s?.keyPoints?.length) { lines.push("KEY POINTS", ...s.keyPoints.map((k) => `• ${k}`), ""); }
+    if (s?.actionItems?.length) {
+      lines.push("ACTION ITEMS");
+      s.actionItems.forEach((a) => {
+        let line = `• ${a.task}`;
+        if (a.owner) line += ` [${a.owner}]`;
+        if (a.dueDate) line += ` (${a.dueDate})`;
+        lines.push(line);
+      });
+      lines.push("");
+    }
+    if (s?.decisions?.length) { lines.push("DECISIONS", ...s.decisions.map((d) => `• ${d}`), ""); }
+    if (s?.questions?.length) { lines.push("OPEN QUESTIONS", ...s.questions.map((q) => `• ${q}`), ""); }
+    if (meeting.transcript) {
+      lines.push("─".repeat(60), "FULL TRANSCRIPT", "─".repeat(60), "", meeting.transcript);
+    }
+    return lines.join("\n");
+  };
+
+  const downloadBlob = (content: string, filename: string, mime: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const safeFilename = (ext: string) =>
+    `${meeting!.title.replace(/[^a-z0-9]/gi, "_")}_${new Date(meeting!.created_at).toISOString().slice(0, 10)}.${ext}`;
+
+  const exportText = () => {
+    if (!meeting) return;
+    downloadBlob(buildTextContent(), safeFilename("txt"), "text/plain;charset=utf-8");
+    toast.success("Text file downloaded");
+    setShowExportMenu(false);
+  };
+
+  const exportMarkdown = () => {
+    if (!meeting) return;
+    const date = new Date(meeting.created_at).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+    const s = meeting.summary;
+    const lines: string[] = [
+      `# ${meeting.title}`,
+      `**Date:** ${date} · **Duration:** ${formatDuration(meeting.duration || 0)} · **Platform:** ${plt.label}`,
+      "",
+    ];
+    if (s?.overview) { lines.push("## Overview", s.overview, ""); }
+    if (s?.keyPoints?.length) {
+      lines.push("## Key Points");
+      s.keyPoints.forEach((k) => lines.push(`- ${k}`));
+      lines.push("");
+    }
+    if (s?.actionItems?.length) {
+      lines.push("## Action Items");
+      s.actionItems.forEach((a) => {
+        let line = `- [ ] ${a.task}`;
+        if (a.owner) line += ` *(${a.owner})*`;
+        if (a.dueDate) line += ` — due ${a.dueDate}`;
+        lines.push(line);
+      });
+      lines.push("");
+    }
+    if (s?.decisions?.length) {
+      lines.push("## Decisions");
+      s.decisions.forEach((d) => lines.push(`- ${d}`));
+      lines.push("");
+    }
+    if (s?.questions?.length) {
+      lines.push("## Open Questions");
+      s.questions.forEach((q) => lines.push(`- ${q}`));
+      lines.push("");
+    }
+    if (meeting.transcript) {
+      lines.push("## Transcript", "");
+      meeting.transcript.split("\n").forEach((line) => {
+        const match = line.match(/^(.+?):\s(.+)$/);
+        if (match) lines.push(`**${resolveName(match[1])}:** ${match[2]}`);
+        else if (line.trim()) lines.push(line);
+      });
+    }
+    downloadBlob(lines.join("\n"), safeFilename("md"), "text/markdown;charset=utf-8");
+    toast.success("Markdown file downloaded");
+    setShowExportMenu(false);
+  };
+
+  const exportJson = () => {
+    if (!meeting) return;
+    const payload = {
+      id: meeting.id,
+      title: meeting.title,
+      platform: meeting.platform,
+      date: meeting.created_at,
+      duration: meeting.duration,
+      status: meeting.status,
+      summary: meeting.summary,
+      transcript: meeting.transcript,
+    };
+    downloadBlob(JSON.stringify(payload, null, 2), safeFilename("json"), "application/json;charset=utf-8");
+    toast.success("JSON file downloaded");
+    setShowExportMenu(false);
+  };
+
+  const exportCsv = () => {
+    if (!meeting) return;
+    const items = meeting.summary?.actionItems ?? [];
+    if (!items.length) { toast.error("No action items to export"); return; }
+    const rows = [["Task", "Owner", "Due Date", "Meeting", "Date"]];
+    items.forEach((a) => {
+      rows.push([
+        `"${a.task.replace(/"/g, '""')}"`,
+        `"${(a.owner ?? "").replace(/"/g, '""')}"`,
+        `"${(a.dueDate ?? "").replace(/"/g, '""')}"`,
+        `"${meeting.title.replace(/"/g, '""')}"`,
+        new Date(meeting.created_at).toISOString().slice(0, 10),
+      ]);
+    });
+    downloadBlob(rows.map((r) => r.join(",")).join("\n"), safeFilename("csv"), "text/csv;charset=utf-8");
+    toast.success("CSV downloaded — open in Excel or Google Sheets");
+    setShowExportMenu(false);
+  };
+
+  const exportDocx = async () => {
+    if (!meeting) return;
+    try {
+      const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import("docx");
+      const s = meeting.summary;
+      const date = new Date(meeting.created_at).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const children: any[] = [];
+
+      const h = (text: string, level: typeof HeadingLevel[keyof typeof HeadingLevel]) =>
+        new Paragraph({ text, heading: level, spacing: { before: 240, after: 80 } });
+      const bullet = (text: string) =>
+        new Paragraph({ bullet: { level: 0 }, children: [new TextRun(text)] });
+      const body = (text: string) =>
+        new Paragraph({ children: [new TextRun(text)], spacing: { after: 80 } });
+
+      children.push(h(meeting.title, HeadingLevel.HEADING_1));
+      children.push(body(`Date: ${date}   •   Duration: ${formatDuration(meeting.duration || 0)}   •   Platform: ${plt.label}`));
+
+      if (s?.overview) {
+        children.push(h("Overview", HeadingLevel.HEADING_2));
+        children.push(body(s.overview));
+      }
+      if (s?.keyPoints?.length) {
+        children.push(h("Key Points", HeadingLevel.HEADING_2));
+        s.keyPoints.forEach((k) => children.push(bullet(k)));
+      }
+      if (s?.actionItems?.length) {
+        children.push(h("Action Items", HeadingLevel.HEADING_2));
+        s.actionItems.forEach((a) => {
+          let text = a.task;
+          if (a.owner) text += ` [${a.owner}]`;
+          if (a.dueDate) text += ` (${a.dueDate})`;
+          children.push(bullet(text));
+        });
+      }
+      if (s?.decisions?.length) {
+        children.push(h("Decisions", HeadingLevel.HEADING_2));
+        s.decisions.forEach((d) => children.push(bullet(d)));
+      }
+      if (s?.questions?.length) {
+        children.push(h("Open Questions", HeadingLevel.HEADING_2));
+        s.questions.forEach((q) => children.push(bullet(q)));
+      }
+      if (meeting.transcript) {
+        children.push(h("Full Transcript", HeadingLevel.HEADING_2));
+        meeting.transcript.split("\n").forEach((line) => {
+          const match = line.match(/^(.+?):\s(.+)$/);
+          if (match) {
+            children.push(new Paragraph({
+              spacing: { after: 60 },
+              children: [
+                new TextRun({ text: resolveName(match[1]) + ": ", bold: true }),
+                new TextRun(match[2]),
+              ],
+            }));
+          } else if (line.trim()) {
+            children.push(body(line));
+          }
+        });
+      }
+
+      const doc = new Document({
+        sections: [{ properties: {}, children }],
+        creator: "MeetFlow AI",
+        title: meeting.title,
+      });
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = safeFilename("docx");
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Word document downloaded");
+      setShowExportMenu(false);
+    } catch (err) {
+      console.error("[exportDocx]", err);
+      toast.error("Failed to generate Word document");
+    }
+  };
+
+  const exportPdf = () => {
+    if (!meeting) return;
+    const s = meeting.summary;
+    const date = new Date(meeting.created_at).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+    const section = (title: string, items: string[]) => items.length
+      ? `<h2>${title}</h2><ul>${items.map((i) => `<li>${i}</li>`).join("")}</ul>`
+      : "";
+
+    const actionHtml = s?.actionItems?.length
+      ? `<h2>Action Items</h2><ul>${s.actionItems.map((a) => {
+          let t = a.task;
+          if (a.owner) t += ` <em>[${a.owner}]</em>`;
+          if (a.dueDate) t += ` <span class="due">Due: ${a.dueDate}</span>`;
+          return `<li>${t}</li>`;
+        }).join("")}</ul>`
+      : "";
+
+    const transcriptHtml = meeting.transcript
+      ? `<h2>Transcript</h2><div class="transcript">${meeting.transcript.split("\n").map((line) => {
+          const match = line.match(/^(.+?):\s(.+)$/);
+          return match
+            ? `<p><strong>${resolveName(match[1])}:</strong> ${match[2]}</p>`
+            : line.trim() ? `<p>${line}</p>` : "";
+        }).join("")}</div>`
+      : "";
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>${meeting.title}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, 'Segoe UI', Arial, sans-serif; color: #1e293b; padding: 48px; max-width: 800px; margin: 0 auto; font-size: 14px; line-height: 1.6; }
+  h1 { font-size: 24px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+  .meta { color: #64748b; font-size: 12px; margin-bottom: 32px; border-bottom: 2px solid #e2e8f0; padding-bottom: 16px; }
+  h2 { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #4f46e5; margin: 28px 0 10px; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 6px; color: #334155; }
+  .transcript p { margin-bottom: 8px; }
+  .transcript strong { color: #4f46e5; }
+  .due { background: #fef3c7; color: #92400e; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-left: 6px; font-style: normal; }
+  em { color: #64748b; }
+  @media print { body { padding: 24px; } }
+</style>
+</head><body>
+<h1>${meeting.title}</h1>
+<p class="meta">${date} &nbsp;·&nbsp; ${formatDuration(meeting.duration || 0)} &nbsp;·&nbsp; ${plt.label}</p>
+${s?.overview ? `<h2>Overview</h2><p>${s.overview}</p>` : ""}
+${section("Key Points", s?.keyPoints ?? [])}
+${actionHtml}
+${section("Decisions", s?.decisions ?? [])}
+${section("Open Questions", s?.questions ?? [])}
+${transcriptHtml}
+<script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}<\/script>
+</body></html>`;
+
+    const w = window.open("", "_blank", "width=900,height=700");
+    if (w) { w.document.write(html); w.document.close(); }
+    setShowExportMenu(false);
+  };
+
+  const copyShareLink = () => {
+    const url = `${window.location.origin}/dashboard/meeting/${meeting?.id}`;
+    navigator.clipboard.writeText(url).then(() => toast.success("Link copied to clipboard"));
+    setShowExportMenu(false);
+  };
+
+  // ── Feature 7: Custom prompts ─────────────────────────────────────────────
+  const saveCustomPrompt = () => {
+    if (!newPromptLabel.trim() || !newPromptText.trim()) return;
+    const np: CustomPrompt = { id: String(Date.now()), label: newPromptLabel.trim(), prompt: newPromptText.trim() };
+    const updated = [...customPrompts, np];
+    setCustomPrompts(updated);
+    localStorage.setItem(CUSTOM_PROMPTS_KEY, JSON.stringify(updated));
+    setNewPromptLabel("");
+    setNewPromptText("");
+    setShowAddPrompt(false);
+    toast.success("Prompt saved");
+  };
+
+  const deleteCustomPrompt = (promptId: string) => {
+    const updated = customPrompts.filter((p) => p.id !== promptId);
+    setCustomPrompts(updated);
+    localStorage.setItem(CUSTOM_PROMPTS_KEY, JSON.stringify(updated));
+  };
+
+  // ── Feature 8: Email team ─────────────────────────────────────────────────
+  const sendTeamEmail = async () => {
+    const emails = emailRecipients
+      .split(",")
+      .map((e) => e.trim())
+      .filter(Boolean);
+    if (!emails.length) { toast.error("Enter at least one email address"); return; }
+    const invalid = emails.filter((e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e));
+    if (invalid.length) { toast.error(`Invalid email(s): ${invalid.join(", ")}`); return; }
+    if (emails.length > 20) { toast.error("Maximum 20 recipients"); return; }
+    setSendingTeamEmail(true);
+    try {
+      const res = await fetch("/api/google/send-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meetingId: id, recipientEmails: emails }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(`Summary sent to ${emails.length} recipient${emails.length > 1 ? "s" : ""}`);
+        setShowEmailModal(false);
+        setEmailRecipients("");
+      } else {
+        toast.error(data.error ?? "Failed to send email");
+      }
+    } catch { toast.error("Network error"); }
+    finally { setSendingTeamEmail(false); }
+  };
+
   // ── Derived data ────────────────────────────────────────────────────────────
+  const speakerNames: Record<string, string> = meeting?.summary?.speakerNames ?? {};
+  const resolveName = (raw: string) => speakerNames[raw] ?? raw;
+
   const transcriptLines = meeting?.transcript ? parseTranscript(meeting.transcript) : [];
-  const speakerStats = getSpeakerStats(transcriptLines);
+  // Apply speaker name overrides to transcript lines for display
+  const resolvedLines = transcriptLines.map((l) => ({ ...l, speaker: resolveName(l.speaker) }));
+  const speakerStats = getSpeakerStats(resolvedLines);
+  const speakerWordStats = getSpeakerWordStats(resolvedLines);
   const filteredLines = transcriptSearch
-    ? transcriptLines.filter((l) => l.text.toLowerCase().includes(transcriptSearch.toLowerCase()) || l.speaker.toLowerCase().includes(transcriptSearch.toLowerCase()))
-    : transcriptLines;
+    ? resolvedLines.filter((l) => l.text.toLowerCase().includes(transcriptSearch.toLowerCase()) || l.speaker.toLowerCase().includes(transcriptSearch.toLowerCase()))
+    : resolvedLines;
   const plt = PLATFORM_LABELS[meeting?.platform ?? ""] ?? PLATFORM_LABELS.other;
 
   // ── Loading ─────────────────────────────────────────────────────────────────
@@ -419,6 +871,81 @@ export default function MeetingPage() {
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="flex h-full overflow-hidden bg-white">
+
+      {/* ── Email Team Modal (Feature 8) ──────────────────────────────────── */}
+      <AnimatePresence>
+        {showEmailModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+            onClick={(e) => { if (e.target === e.currentTarget) setShowEmailModal(false); }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-slate-900 font-bold text-base">Email Meeting Summary</h2>
+                <button onClick={() => setShowEmailModal(false)} className="text-slate-400 hover:text-slate-600 transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <label className="block text-xs font-semibold text-slate-600 mb-1.5">Recipients <span className="text-slate-400 font-normal">(comma-separated, max 20)</span></label>
+              <input
+                type="text"
+                value={emailRecipients}
+                onChange={(e) => setEmailRecipients(e.target.value)}
+                placeholder="alice@example.com, bob@example.com"
+                className="w-full text-sm border border-slate-200 rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 text-slate-800 placeholder-slate-400 mb-4"
+              />
+
+              {/* Email preview */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 mb-4 max-h-48 overflow-y-auto">
+                <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Preview</p>
+                <p className="text-sm font-bold text-slate-800 mb-1">{meeting.title}</p>
+                {meeting.summary?.overview && (
+                  <p className="text-xs text-slate-600 leading-relaxed mb-2">{meeting.summary.overview}</p>
+                )}
+                {meeting.summary?.actionItems && meeting.summary.actionItems.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-slate-700 mb-1">Action Items:</p>
+                    <ul className="space-y-0.5">
+                      {meeting.summary.actionItems.slice(0, 5).map((a, i) => (
+                        <li key={i} className="text-xs text-slate-600 flex gap-1.5">
+                          <span className="text-indigo-400 flex-shrink-0">•</span>
+                          <span>{a.task}{a.owner ? ` — ${a.owner}` : ""}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowEmailModal(false)}
+                  className="flex-1 text-sm font-medium text-slate-600 border border-slate-200 rounded-xl py-2.5 hover:bg-slate-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={sendTeamEmail}
+                  disabled={sendingTeamEmail || !emailRecipients.trim()}
+                  className="flex-1 flex items-center justify-center gap-2 text-sm font-semibold bg-indigo-600 text-white rounded-xl py-2.5 hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                >
+                  {sendingTeamEmail ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                  {sendingTeamEmail ? "Sending…" : "Send Email"}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── CENTER ──────────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
@@ -453,19 +980,66 @@ export default function MeetingPage() {
               </div>
             </div>
             {/* Action buttons */}
-            <div className="flex items-center gap-1.5 flex-shrink-0">
+            <div className="flex items-center gap-1.5 flex-shrink-0 flex-wrap justify-end">
+              {/* Export dropdown */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowExportMenu((v) => !v)}
+                  className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50 transition-colors"
+                >
+                  <FileText className="w-3 h-3" /> <span>Export</span>
+                  <ChevronRight className="w-3 h-3 rotate-90" />
+                </button>
+                <AnimatePresence>
+                  {showExportMenu && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setShowExportMenu(false)} />
+                      <motion.div
+                        initial={{ opacity: 0, y: -4, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -4, scale: 0.97 }}
+                        transition={{ duration: 0.12 }}
+                        className="absolute right-0 top-full mt-1.5 z-20 bg-white border border-slate-200 rounded-xl shadow-lg py-1 min-w-[160px]"
+                      >
+                        {[
+                          { label: "PDF (Print)", icon: "🖨️", action: exportPdf },
+                          { label: "Word (.docx)", icon: "📄", action: exportDocx },
+                          { label: "Plain Text", icon: "📝", action: exportText },
+                          { label: "Markdown", icon: "⬇️", action: exportMarkdown },
+                          { label: "JSON", icon: "{ }", action: exportJson },
+                          { label: "Action Items CSV", icon: "📊", action: exportCsv },
+                        ].map((item) => (
+                          <button
+                            key={item.label}
+                            onClick={item.action}
+                            className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs text-slate-700 hover:bg-slate-50 transition-colors text-left"
+                          >
+                            <span className="text-sm">{item.icon}</span> {item.label}
+                          </button>
+                        ))}
+                      </motion.div>
+                    </>
+                  )}
+                </AnimatePresence>
+              </div>
+
               <button onClick={copyTranscript} className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50 transition-colors">
                 {copied ? <Check className="w-3 h-3 text-teal-500" /> : <Copy className="w-3 h-3" />}
                 <span>{copied ? "Copied" : "Copy"}</span>
               </button>
-              <button onClick={() => toast.success("Share link copied!")} className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50 transition-colors">
+              <button onClick={copyShareLink} className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50 transition-colors">
                 <Share2 className="w-3 h-3" /> <span>Share</span>
               </button>
               {googleConnected && meeting?.summary && (
-                <button onClick={emailSummary} disabled={sendingEmail} className="flex items-center gap-1 text-xs text-indigo-600 border border-indigo-200 rounded-lg px-2.5 py-1.5 hover:bg-indigo-50 transition-colors disabled:opacity-60">
-                  {sendingEmail ? <Loader2 className="w-3 h-3 animate-spin" /> : <Mail className="w-3 h-3" />}
-                  <span>{sendingEmail ? "Sending…" : "Email"}</span>
-                </button>
+                <>
+                  <button onClick={emailSummary} disabled={sendingEmail} className="flex items-center gap-1 text-xs text-indigo-600 border border-indigo-200 rounded-lg px-2.5 py-1.5 hover:bg-indigo-50 transition-colors disabled:opacity-60">
+                    {sendingEmail ? <Loader2 className="w-3 h-3 animate-spin" /> : <Mail className="w-3 h-3" />}
+                    <span>{sendingEmail ? "Sending…" : "Email Me"}</span>
+                  </button>
+                  <button onClick={() => setShowEmailModal(true)} className="flex items-center gap-1 text-xs text-teal-600 border border-teal-200 rounded-lg px-2.5 py-1.5 hover:bg-teal-50 transition-colors">
+                    <Mail className="w-3 h-3" /> <span>Email Team</span>
+                  </button>
+                </>
               )}
               <button onClick={deleteMeeting} className="flex items-center gap-1 text-xs text-red-400 hover:text-red-600 border border-red-100 rounded-lg px-2.5 py-1.5 hover:bg-red-50 transition-colors">
                 <Trash2 className="w-3 h-3" />
@@ -516,6 +1090,73 @@ export default function MeetingPage() {
                         <p className="text-slate-400 text-sm mt-1">Choose a prompt or type your own question below</p>
                       </div>
 
+                      {/* ── Feature 3: Speaker Analytics card ────────── */}
+                      {speakerWordStats.length >= 2 && (
+                        <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                          <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Speaker Breakdown</p>
+                          <div className="space-y-2.5">
+                            {speakerWordStats.map((sp) => (
+                              <div key={sp.name} className="flex items-center gap-2.5">
+                                <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: sp.color }} />
+                                <span className="text-xs font-medium text-slate-700 w-20 truncate flex-shrink-0">{sp.name}</span>
+                                <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                  <motion.div
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${sp.pct * 100}%` }}
+                                    transition={{ duration: 0.8, ease: "easeOut" }}
+                                    className="h-full rounded-full"
+                                    style={{ background: sp.color }}
+                                  />
+                                </div>
+                                <span className="text-xs text-slate-400 flex-shrink-0 w-20 text-right">
+                                  {sp.words.toLocaleString()}w · {Math.round(sp.words / 130)}m
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ── Action Item Completion Tracker ───────────── */}
+                      {meeting.summary?.actionItems && meeting.summary.actionItems.length > 0 && (
+                        <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Action Items</p>
+                            <span className="text-xs text-slate-400">
+                              {meeting.summary.actionItems.filter((a) => a.completed).length}/{meeting.summary.actionItems.length} done
+                            </span>
+                          </div>
+                          <div className="space-y-2">
+                            {meeting.summary.actionItems.map((item, i) => (
+                              <div
+                                key={i}
+                                className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer hover:bg-slate-50 transition-colors ${item.completed ? "opacity-60" : ""}`}
+                                onClick={() => toggleActionItem(i)}
+                              >
+                                <div className={`w-4 h-4 rounded border flex-shrink-0 mt-0.5 flex items-center justify-center transition-colors ${item.completed ? "bg-emerald-500 border-emerald-500" : "border-slate-300"}`}>
+                                  {item.completed && <Check className="w-2.5 h-2.5 text-white" strokeWidth={3} />}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className={`text-xs text-slate-700 leading-relaxed ${item.completed ? "line-through text-slate-400" : ""}`}>
+                                    {item.task}
+                                  </p>
+                                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                                    {item.owner && <span className="text-[10px] text-slate-400">{item.owner}</span>}
+                                    {item.dueDate && <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0 rounded-full">{item.dueDate}</span>}
+                                    {item.priority && (
+                                      <span className={`text-[10px] px-1.5 rounded-full font-medium ${
+                                        item.priority === "high" ? "bg-red-50 text-red-600" :
+                                        item.priority === "medium" ? "bg-amber-50 text-amber-600" : "bg-slate-100 text-slate-500"
+                                      }`}>{item.priority}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="grid grid-cols-2 gap-2.5">
                         {PROMPT_TEMPLATES.map((t) => (
                           <button
@@ -536,9 +1177,78 @@ export default function MeetingPage() {
                         ))}
                       </div>
 
-                      <button className="mt-4 w-full text-center text-xs text-indigo-500 hover:text-indigo-700 font-medium transition-colors">
-                        View all AI prompts ▾
-                      </button>
+                      {/* ── Feature 7: Custom saved prompts ──────────── */}
+                      <div className="mt-4 pt-4 border-t border-slate-200">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs font-bold text-slate-500 uppercase tracking-wide">Saved Prompts</p>
+                          <button
+                            onClick={() => setShowAddPrompt((v) => !v)}
+                            className="flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 font-semibold transition-colors"
+                          >
+                            <Plus className="w-3 h-3" /> Add Prompt
+                          </button>
+                        </div>
+
+                        {showAddPrompt && (
+                          <div className="mb-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3 space-y-2">
+                            <input
+                              type="text"
+                              value={newPromptLabel}
+                              onChange={(e) => setNewPromptLabel(e.target.value)}
+                              placeholder="Label (e.g. Risk summary)"
+                              className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white text-slate-800 placeholder-slate-400"
+                            />
+                            <textarea
+                              value={newPromptText}
+                              onChange={(e) => setNewPromptText(e.target.value)}
+                              placeholder="Prompt text…"
+                              rows={2}
+                              className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-1.5 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500/40 bg-white text-slate-800 placeholder-slate-400"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={saveCustomPrompt}
+                                disabled={!newPromptLabel.trim() || !newPromptText.trim()}
+                                className="text-xs bg-indigo-600 disabled:opacity-50 text-white font-semibold px-3 py-1.5 rounded-lg hover:bg-indigo-700 transition-colors"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={() => { setShowAddPrompt(false); setNewPromptLabel(""); setNewPromptText(""); }}
+                                className="text-xs text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 transition-colors"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {customPrompts.length === 0 && !showAddPrompt && (
+                          <p className="text-xs text-slate-400 text-center py-2">No saved prompts yet — add your own reusable prompts above</p>
+                        )}
+
+                        {customPrompts.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {customPrompts.map((cp) => (
+                              <div key={cp.id} className="flex items-center gap-1 bg-slate-100 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded-lg pl-2.5 pr-1 py-1 group transition-colors">
+                                <button
+                                  onClick={() => { setChatInput(cp.prompt); inputRef.current?.focus(); }}
+                                  className="text-xs text-slate-700 group-hover:text-indigo-700 font-medium transition-colors"
+                                >
+                                  {cp.label}
+                                </button>
+                                <button
+                                  onClick={() => deleteCustomPrompt(cp.id)}
+                                  className="ml-1 text-slate-300 hover:text-red-400 transition-colors flex-shrink-0"
+                                  title="Remove prompt"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -691,7 +1401,34 @@ export default function MeetingPage() {
 
                           {/* Content */}
                           <div className="flex-1">
-                            <p className="text-xs font-semibold mb-0.5" style={{ color }}>{line.speaker}</p>
+                            {/* Speaker name — click to rename (Feature 4) */}
+                            <div className="flex items-center gap-1 mb-0.5 group/name">
+                              {editingSpeaker === line.speaker ? (
+                                <input
+                                  autoFocus
+                                  value={editingSpeakerValue}
+                                  onChange={(e) => setEditingSpeakerValue(e.target.value)}
+                                  onBlur={() => saveSpeakerName(line.speaker, editingSpeakerValue)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") saveSpeakerName(line.speaker, editingSpeakerValue);
+                                    if (e.key === "Escape") setEditingSpeaker(null);
+                                  }}
+                                  className="text-xs font-semibold border-b border-indigo-400 bg-transparent focus:outline-none w-28"
+                                  style={{ color }}
+                                />
+                              ) : (
+                                <>
+                                  <p className="text-xs font-semibold" style={{ color }}>{line.speaker}</p>
+                                  <button
+                                    onClick={() => { setEditingSpeaker(line.speaker); setEditingSpeakerValue(line.speaker); }}
+                                    className="opacity-0 group-hover/name:opacity-100 transition-opacity text-slate-300 hover:text-slate-500 flex-shrink-0"
+                                    title="Rename speaker"
+                                  >
+                                    <Edit2 className="w-2.5 h-2.5" />
+                                  </button>
+                                </>
+                              )}
+                            </div>
                             <p className={`text-slate-700 text-sm leading-relaxed ${transcriptSearch && (line.text.toLowerCase().includes(transcriptSearch.toLowerCase())) ? "bg-amber-50 rounded px-1 -mx-1" : ""}`}>
                               {line.text}
                             </p>
@@ -730,36 +1467,106 @@ export default function MeetingPage() {
                       <h2 className="text-slate-800 font-bold text-base">Meeting Workflows</h2>
                       <p className="text-slate-400 text-xs mt-0.5">Automate your post-meeting tasks</p>
                     </div>
-                    <button onClick={() => toast.success("Custom workflows — coming in Pro!")} className="flex items-center gap-1.5 text-xs bg-indigo-600 text-white font-semibold px-3 py-1.5 rounded-xl hover:bg-indigo-700 transition-colors">
-                      <Plus className="w-3 h-3" /> New Workflow
+                    <button
+                      disabled={runningAll || !workflowConfig}
+                      onClick={async () => {
+                        if (!meeting?.id) return;
+                        setRunningAll(true);
+                        try {
+                          const res = await fetch("/api/workflows/run", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ meetingId: meeting.id }),
+                          });
+                          const data = await res.json() as { results?: Record<string, WorkflowRunResult>; error?: string };
+                          if (!res.ok) { toast.error(data.error ?? "Workflow run failed"); return; }
+                          // Merge new run results into meeting state
+                          setMeeting((m) => m ? { ...m, workflow_runs: { ...(m.workflow_runs ?? {}), ...(data.results ?? {}) } } : m);
+                          const ran = Object.keys(data.results ?? {});
+                          const failed = ran.filter((k) => data.results![k].status === "error");
+                          if (failed.length === 0) toast.success(`All workflows ran successfully`);
+                          else toast.error(`${failed.length} workflow(s) failed: ${failed.join(", ")}`);
+                        } catch { toast.error("Failed to run workflows"); }
+                        finally { setRunningAll(false); }
+                      }}
+                      className="flex items-center gap-1.5 text-xs bg-indigo-600 text-white font-semibold px-3 py-1.5 rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                    >
+                      {runningAll ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+                      {runningAll ? "Running…" : "Run All"}
                     </button>
                   </div>
 
                   <div className="space-y-2.5">
-                    {WORKFLOWS.map((w, i) => (
-                      <div key={i} className="flex items-center gap-3 p-3.5 rounded-xl border border-slate-200 bg-white hover:border-indigo-200 transition-colors cursor-pointer" onClick={() => toast.success(`${w.name} — coming in Pro!`)}>
-                        <span className="text-xl flex-shrink-0">{w.icon}</span>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-semibold text-slate-800">{w.name}</p>
-                          <p className="text-xs text-slate-400 mt-0.5">{w.desc}</p>
-                        </div>
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <div className={`w-2 h-2 rounded-full ${w.active ? "bg-emerald-400" : "bg-slate-300"}`} />
-                          <ChevronRight className="w-4 h-4 text-slate-300" />
-                        </div>
-                      </div>
-                    ))}
+                    {WORKFLOW_DEFS.map((w) => {
+                      const enabled = workflowConfig?.[w.key]?.enabled ?? false;
+                      const runResult = meeting?.workflow_runs?.[w.key];
+                      const isRunning = runningWorkflow[w.key] ?? false;
 
-                    {/* Empty state card */}
-                    <button
-                      onClick={() => toast.success("Build your own workflow — coming in Pro!")}
-                      className="w-full p-4 rounded-xl border-2 border-dashed border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 transition-all text-center"
-                    >
-                      <Plus className="w-5 h-5 text-slate-400 mx-auto mb-1.5" />
-                      <p className="text-sm font-semibold text-slate-500">Build a custom workflow</p>
-                      <p className="text-xs text-slate-400 mt-0.5">Connect any app and automate your tasks</p>
-                    </button>
+                      let lastRunLabel: React.ReactNode = null;
+                      if (runResult) {
+                        const ago = Math.round((Date.now() - new Date(runResult.at).getTime()) / 60_000);
+                        const agoStr = ago < 1 ? "just now" : ago === 1 ? "1 min ago" : ago < 60 ? `${ago} min ago` : `${Math.round(ago / 60)}h ago`;
+                        if (runResult.status === "success") {
+                          lastRunLabel = <span className="text-emerald-600 text-xs">✓ Ran {agoStr}</span>;
+                        } else {
+                          lastRunLabel = <span className="text-red-500 text-xs" title={runResult.error}>✗ Failed {agoStr}</span>;
+                        }
+                      }
+
+                      return (
+                        <div key={w.key} className={`flex items-center gap-3 p-3.5 rounded-xl border transition-colors ${enabled ? "border-indigo-200 bg-indigo-50/30" : "border-slate-200 bg-white"}`}>
+                          <span className="text-xl flex-shrink-0">{w.icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-semibold text-slate-800">{w.name}</p>
+                              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${enabled ? "bg-emerald-400" : "bg-slate-300"}`} />
+                            </div>
+                            <p className="text-xs text-slate-400 mt-0.5">{w.desc}</p>
+                            {lastRunLabel && <div className="mt-1">{lastRunLabel}</div>}
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <button
+                              disabled={isRunning || !enabled}
+                              onClick={async () => {
+                                if (!meeting?.id) return;
+                                setRunningWorkflow((s) => ({ ...s, [w.key]: true }));
+                                try {
+                                  const res = await fetch("/api/workflows/run", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ meetingId: meeting.id, workflows: [w.key] }),
+                                  });
+                                  const data = await res.json() as { results?: Record<string, WorkflowRunResult>; error?: string };
+                                  if (!res.ok) { toast.error(data.error ?? "Run failed"); return; }
+                                  setMeeting((m) => m ? { ...m, workflow_runs: { ...(m.workflow_runs ?? {}), ...(data.results ?? {}) } } : m);
+                                  const result = data.results?.[w.key];
+                                  if (result?.status === "success") toast.success(`${w.name} ran successfully`);
+                                  else toast.error(`${w.name} failed: ${result?.error ?? "unknown error"}`);
+                                } catch { toast.error(`Failed to run ${w.name}`); }
+                                finally { setRunningWorkflow((s) => ({ ...s, [w.key]: false })); }
+                              }}
+                              className="text-xs px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+                            >
+                              {isRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                              {isRunning ? "Running…" : "Run"}
+                            </button>
+                            <a
+                              href="/dashboard/settings#workflows"
+                              className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 font-medium transition-colors"
+                            >
+                              Configure
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
+
+                  {!workflowConfig && (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader2 className="w-5 h-5 text-slate-300 animate-spin" />
+                    </div>
+                  )}
                 </div>
               </motion.div>
             )}
@@ -925,6 +1732,111 @@ export default function MeetingPage() {
               <button onClick={() => setActiveTab("ai")} className="text-xs text-indigo-500 hover:text-indigo-700 font-medium mt-1.5">
                 Chat with AI →
               </button>
+            </div>
+          )}
+
+          {/* ── Meeting Intelligence Panel ──────────────────────── */}
+          {meeting.summary && (
+            <div className="mt-4 pt-4 border-t border-slate-200 space-y-4">
+
+              {/* Health Score */}
+              {typeof meeting.summary.healthScore === "number" && (
+                <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Meeting Health</p>
+                  <div className="flex items-center gap-2">
+                    <div className="relative w-10 h-10 flex-shrink-0">
+                      <svg viewBox="0 0 40 40" className="w-full h-full -rotate-90">
+                        <circle cx={20} cy={20} r={16} fill="none" stroke="#F1F5F9" strokeWidth={5} />
+                        <motion.circle
+                          cx={20} cy={20} r={16}
+                          fill="none"
+                          strokeWidth={5}
+                          strokeLinecap="round"
+                          stroke={meeting.summary.healthScore >= 75 ? "#10B981" : meeting.summary.healthScore >= 50 ? "#F59E0B" : "#EF4444"}
+                          strokeDasharray={`${(meeting.summary.healthScore / 100) * 2 * Math.PI * 16} ${2 * Math.PI * 16}`}
+                          initial={{ strokeDasharray: `0 ${2 * Math.PI * 16}` }}
+                          animate={{ strokeDasharray: `${(meeting.summary.healthScore / 100) * 2 * Math.PI * 16} ${2 * Math.PI * 16}` }}
+                          transition={{ duration: 0.8 }}
+                        />
+                      </svg>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="text-[10px] font-bold text-slate-700">{meeting.summary.healthScore}</span>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-700">
+                        {meeting.summary.healthScore >= 75 ? "Great" : meeting.summary.healthScore >= 50 ? "Good" : "Needs work"}
+                      </p>
+                      <p className="text-[10px] text-slate-400">quality score</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Sentiment */}
+              {meeting.summary.sentiment && (
+                <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Sentiment</p>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">
+                      {meeting.summary.sentiment.label === "positive" ? "😊" : meeting.summary.sentiment.label === "negative" ? "😟" : "😐"}
+                    </span>
+                    <div>
+                      <p className="text-xs font-semibold text-slate-700 capitalize">{meeting.summary.sentiment.label}</p>
+                      <p className="text-[10px] text-slate-400">score: {meeting.summary.sentiment.score}/100</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Topics */}
+              {meeting.summary.topics && meeting.summary.topics.length > 0 && (
+                <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Topics</p>
+                  <div className="flex flex-wrap gap-1">
+                    {meeting.summary.topics.map((t) => (
+                      <span key={t} className="text-[10px] font-medium px-2 py-0.5 rounded-full" style={{ background: "#EEF2FF", color: "#4F46E5" }}>
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Follow-up email draft */}
+              {meeting.summary.followUpEmail && (
+                <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Follow-up Draft</p>
+                  <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-200">
+                    <p className="text-[10px] font-semibold text-slate-500 mb-1">Subject: {meeting.summary.followUpEmail.subject}</p>
+                    <p className="text-[10px] text-slate-600 leading-relaxed line-clamp-4">{meeting.summary.followUpEmail.body}</p>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(`Subject: ${meeting.summary!.followUpEmail!.subject}\n\n${meeting.summary!.followUpEmail!.body}`);
+                        toast.success("Follow-up email copied!");
+                      }}
+                      className="mt-2 text-[10px] font-semibold text-indigo-500 hover:text-indigo-700 transition-colors"
+                    >
+                      Copy email →
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Next meeting agenda */}
+              {meeting.summary.nextAgenda && meeting.summary.nextAgenda.length > 0 && (
+                <div>
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">Next Meeting</p>
+                  <ul className="space-y-1">
+                    {meeting.summary.nextAgenda.map((item, i) => (
+                      <li key={i} className="flex gap-1.5 items-start">
+                        <span className="text-indigo-400 text-[10px] mt-0.5 flex-shrink-0">→</span>
+                        <span className="text-[10px] text-slate-600 leading-relaxed">{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>

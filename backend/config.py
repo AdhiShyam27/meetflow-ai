@@ -31,15 +31,22 @@ def _detect_device() -> str:
 _env_device = os.getenv("DEVICE", "auto").lower()
 DEVICE: str = _detect_device() if _env_device == "auto" else _env_device
 
+# WhisperX (CTranslate2 backend) does NOT support MPS — force CPU on Apple Silicon.
+# pyannote diarization DOES support MPS, so we keep a separate device for that.
+WHISPER_DEVICE: str = "cpu" if DEVICE == "mps" else DEVICE
+# pyannote has many ops not implemented on MPS at inference time — force CPU to avoid silent failures
+DIARIZE_DEVICE: str = "cpu" if DEVICE == "mps" else DEVICE
+
 # ── Model configuration ───────────────────────────────────────────────────────
 
 WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "large-v3-turbo")
 
-# int8 on CPU (faster, lower RAM), float16 on GPU/MPS (better accuracy)
-COMPUTE_TYPE: str = "int8" if DEVICE == "cpu" else "float16"
+# int8 on CPU (faster, lower RAM), float16 on GPU/MPS
+COMPUTE_TYPE: str = "int8" if WHISPER_DEVICE == "cpu" else "float16"
 
 BEAM_SIZE: int = 5
-BATCH_SIZE: int = 16       # for WhisperX alignment
+# Lower batch size on CPU to avoid OOM; GPU can handle 16
+BATCH_SIZE: int = 4 if WHISPER_DEVICE == "cpu" else 16
 VAD_FILTER: bool = True    # skip silence segments
 LANGUAGE: str | None = None  # None = auto-detect
 
@@ -68,10 +75,10 @@ def _find_ffmpeg() -> str:
     if shutil.which("ffmpeg"):
         return "ffmpeg"
     for candidate in [
-        "/Users/adhishyam/anaconda3/bin/ffmpeg",
         "/opt/conda/bin/ffmpeg",
         "/opt/homebrew/bin/ffmpeg",
         "/usr/local/bin/ffmpeg",
+        "/usr/bin/ffmpeg",
     ]:
         if os.path.isfile(candidate):
             return candidate
