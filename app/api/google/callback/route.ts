@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { encrypt } from "@/lib/encryption";
 
 export async function GET(request: NextRequest) {
   const origin = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
@@ -76,10 +77,10 @@ export async function GET(request: NextRequest) {
 
   const expiry = new Date(Date.now() + (tokens.expires_in ?? 3600) * 1000);
 
-  // Save tokens to profiles table
+  // Save tokens to profiles table (encrypted at rest)
   await supabase.from("profiles").update({
-    google_access_token: tokens.access_token,
-    google_refresh_token: tokens.refresh_token,
+    google_access_token: encrypt(tokens.access_token, user.id),
+    google_refresh_token: encrypt(tokens.refresh_token, user.id),
     google_token_expiry: expiry.toISOString(),
     google_email: userInfo.email,
     google_connected_at: new Date().toISOString(),

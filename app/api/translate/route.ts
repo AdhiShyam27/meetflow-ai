@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { rateLimit } from "@/lib/rate-limiter";
 import { chatCompletion, resolveLLMConfig, FAST_MODEL } from "@/lib/llm";
 
+const isDemoMode =
+  !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL === "https://your-project.supabase.co";
+
 // BCP-47 codes so the recording page can switch speech recognition language
 const LANG_TO_CODE: Record<string, string> = {
   Spanish: "es-ES", French: "fr-FR", German: "de-DE",
@@ -20,12 +24,25 @@ const LANG_TO_CODE: Record<string, string> = {
 const FALLBACK = { translated: "", wasTranslated: false, detectedLanguage: "English", languageCode: "en-US" };
 
 export async function POST(request: NextRequest) {
-  // ── Rate limiting by IP — no Supabase round-trip needed on the hot path ──
-  const ip =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    request.headers.get("x-real-ip") ??
-    "unknown";
-  const rl = rateLimit(`translate:${ip}`, 120, 60_000);
+  // ── Authentication ────────────────────────────────────────────────────────
+  let userId: string | null = null;
+
+  if (!isDemoMode) {
+    const { createClient } = await import("@/lib/supabase/server");
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    userId = user.id;
+  }
+
+  // Rate limit by user ID (more reliable than IP)
+  const rateLimitKey = userId
+    ? `translate:${userId}`
+    : `translate:${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}`;
+
+  const rl = rateLimit(rateLimitKey, 120, 60_000);
   if (!rl.allowed) {
     return NextResponse.json(
       { error: "Rate limit exceeded" },
@@ -33,7 +50,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const body = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ ...FALLBACK, translated: "" });
+  }
+
   const text: unknown = body?.text;
 
   if (typeof text !== "string") {
@@ -46,7 +69,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ...FALLBACK, translated: safeText });
   }
 
-  const config = await resolveLLMConfig();
+  const config = await resolveLLMConfig(userId);
   if (!config) {
     return NextResponse.json({ ...FALLBACK, translated: safeText });
   }

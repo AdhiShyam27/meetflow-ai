@@ -1,5 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { decrypt, isEncrypted, encrypt } from "@/lib/encryption";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 
@@ -50,21 +51,29 @@ export async function getValidGoogleToken(userId: string): Promise<string> {
     throw new Error("Google account not connected");
   }
 
+  // Decrypt tokens (backward-compatible with plaintext legacy data)
+  const accessToken = isEncrypted(profile.google_access_token)
+    ? decrypt(profile.google_access_token, userId)
+    : profile.google_access_token;
+  const refreshToken = isEncrypted(profile.google_refresh_token)
+    ? decrypt(profile.google_refresh_token, userId)
+    : profile.google_refresh_token;
+
   const expiry = profile.google_token_expiry ? new Date(profile.google_token_expiry) : new Date(0);
   const isExpired = expiry <= new Date(Date.now() + 60_000); // refresh 1 min early
 
-  if (!isExpired && profile.google_access_token) {
-    return profile.google_access_token;
+  if (!isExpired && accessToken) {
+    return accessToken;
   }
 
   // Refresh the token
-  const refreshed = await refreshGoogleToken(profile.google_refresh_token);
+  const refreshed = await refreshGoogleToken(refreshToken);
   const newExpiry = new Date(Date.now() + refreshed.expires_in * 1000);
 
   await supabase
     .from("profiles")
     .update({
-      google_access_token: refreshed.access_token,
+      google_access_token: encrypt(refreshed.access_token, userId),
       google_token_expiry: newExpiry.toISOString(),
     })
     .eq("id", userId);

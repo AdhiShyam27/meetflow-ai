@@ -2,14 +2,30 @@ import { NextRequest } from "next/server";
 import { rateLimit } from "@/lib/rate-limiter";
 import { chatCompletion, resolveLLMConfig } from "@/lib/llm";
 
-export async function POST(request: NextRequest) {
-  // Rate limit by IP — 60 chat messages per minute
-  const ip =
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    request.headers.get("x-real-ip") ??
-    "unknown";
+const isDemoMode =
+  !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL === "https://your-project.supabase.co";
 
-  const rl = rateLimit(`chat:${ip}`, 60, 60_000);
+export async function POST(request: NextRequest) {
+  // ── Authentication ────────────────────────────────────────────────────────
+  let userId: string | null = null;
+
+  if (!isDemoMode) {
+    const { createClient } = await import("@/lib/supabase/server");
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+    userId = user.id;
+  }
+
+  // Rate limit by user (authenticated) or IP (fallback)
+  const rateLimitKey = userId
+    ? `chat:${userId}`
+    : `chat:${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}`;
+
+  const rl = rateLimit(rateLimitKey, 60, 60_000);
   if (!rl.allowed) {
     return new Response("Rate limit exceeded", {
       status: 429,
@@ -17,7 +33,13 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const body = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
   const { messages, transcript, meetingTitle } = body as {
     messages: { role: "user" | "assistant"; content: string }[];
     transcript?: string;
@@ -36,7 +58,7 @@ ${
 }`;
 
   // Resolve LLM config (user preference → server default)
-  const config = await resolveLLMConfig();
+  const config = await resolveLLMConfig(userId);
 
   // Demo mode — return a mock streamed response
   if (!config) {
@@ -58,15 +80,19 @@ ${
     });
   }
 
-  // Real streaming response via OpenRouter
-  const readable = await chatCompletion(config, {
-    system: systemPrompt,
-    messages,
-    maxTokens: 2048,
-    stream: true,
-  });
+  try {
+    const readable = await chatCompletion(config, {
+      system: systemPrompt,
+      messages,
+      maxTokens: 2048,
+      stream: true,
+    });
 
-  return new Response(readable, {
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-  });
+    return new Response(readable, {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  } catch (err) {
+    console.error("[/api/chat]", err);
+    return new Response("AI service temporarily unavailable", { status: 502 });
+  }
 }

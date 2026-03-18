@@ -65,10 +65,40 @@ function loadConfig(raw: string | null, userId: string): WorkflowConfig {
   }
 }
 
+// ── URL validation (prevent SSRF) ─────────────────────────────────────────────
+
+function validateExternalUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("Invalid URL");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error("Only HTTPS URLs are allowed");
+  }
+  // Block internal/private IPs
+  const host = parsed.hostname.toLowerCase();
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "0.0.0.0" ||
+    host.startsWith("10.") ||
+    host.startsWith("172.") ||
+    host.startsWith("192.168.") ||
+    host.startsWith("169.254.") ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal")
+  ) {
+    throw new Error("Internal URLs are not allowed");
+  }
+}
+
 // ── Workflow runners ───────────────────────────────────────────────────────────
 
 async function runSlack(config: WorkflowConfig["slack"], meeting: MeetingRow): Promise<void> {
   if (!config.webhookUrl) throw new Error("Slack webhook URL not configured");
+  validateExternalUrl(config.webhookUrl);
   const summary = meeting.summary ?? {};
   const payload = {
     text: `*Meeting Summary: ${meeting.title}*`,
@@ -290,6 +320,7 @@ async function runLinear(config: WorkflowConfig["linear"], meeting: MeetingRow):
 
 async function runWebhook(config: WorkflowConfig["webhook"], meeting: MeetingRow): Promise<void> {
   if (!config.url) throw new Error("Webhook URL not configured");
+  validateExternalUrl(config.url);
 
   const payload = {
     event: "meeting.completed",

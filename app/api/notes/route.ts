@@ -59,28 +59,39 @@ export async function POST(request: NextRequest) {
   const inserted: { id: string; filename: string }[] = [];
   const errors: string[] = [];
 
+  // Validate files first, then insert in parallel
+  const validFiles: { name: string; content: string }[] = [];
   for (const file of files) {
     if (file.size > MAX_FILE_SIZE) {
       errors.push(`${file.name}: exceeds 500KB limit`);
       continue;
     }
-
     const content = await file.text();
     if (!content.trim()) {
       errors.push(`${file.name}: empty file`);
       continue;
     }
+    validFiles.push({ name: file.name, content });
+  }
 
-    const { data, error } = await supabase
-      .from("user_notes")
-      .insert({ user_id: user.id, filename: file.name, content })
-      .select("id, filename")
-      .single();
+  // Insert all valid files in parallel
+  const results = await Promise.allSettled(
+    validFiles.map(async (f) => {
+      const { data, error } = await supabase
+        .from("user_notes")
+        .insert({ user_id: user.id, filename: f.name, content: f.content })
+        .select("id, filename")
+        .single();
+      if (error) throw new Error(`${f.name}: ${error.message}`);
+      return data;
+    })
+  );
 
-    if (error) {
-      errors.push(`${file.name}: ${error.message}`);
-    } else if (data) {
-      inserted.push(data);
+  for (const result of results) {
+    if (result.status === "fulfilled" && result.value) {
+      inserted.push(result.value);
+    } else if (result.status === "rejected") {
+      errors.push(result.reason?.message ?? "Unknown error");
     }
   }
 
