@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { computeBasicStats } from "@/lib/analytics/stats";
 
 export async function GET() {
   const supabase = await createClient();
@@ -16,10 +17,7 @@ export async function GET() {
   const meetings = rows ?? [];
 
   // ── Basic counts ────────────────────────────────────────────────────────────
-  const totalMeetings = meetings.length;
-  const totalSeconds = meetings.reduce((s, m) => s + (m.duration ?? 0), 0);
-  const totalHours = +(totalSeconds / 3600).toFixed(1);
-  const avgDuration = totalMeetings > 0 ? Math.round(totalSeconds / totalMeetings / 60) : 0;
+  const { totalMeetings, totalHours, avgDuration } = computeBasicStats(meetings);
 
   // ── Platform breakdown ──────────────────────────────────────────────────────
   const platformCounts: Record<string, number> = {};
