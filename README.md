@@ -35,7 +35,7 @@ From PLAN.md section 5:
 | Transcription backend | Python FastAPI with faster-whisper, WhisperX and pyannote |
 | LLM | OpenRouter (multi-model) |
 | UI | Tailwind CSS 4, framer-motion, lucide-react, sonner |
-| Testing | Vitest |
+| Testing | Node's built-in test runner (`node --test`) |
 
 ## Repo layout
 
@@ -111,7 +111,7 @@ echo "HF_TOKEN=hf_..." > .env   # optional, enables speaker diarization
 npm test
 ```
 
-Tests run with Vitest and cover the two scenarios in PLAN.md section 4: data isolation between users, and the analytics summary stats.
+`npm test` runs `node --test tests/`, Node's built-in test runner, with no extra test dependency. The tests cover the two scenarios in PLAN.md section 4: data isolation between users, and the analytics summary stats. (PLAN.md section 5 names Vitest; the tests were written against Node's runner instead so they run without installing anything beyond Node.)
 
 ## Workflow
 
