@@ -33,6 +33,37 @@ interface CalendarEvent {
   attendees: Array<{ email: string; name: string }>;
 }
 
+type SortKey = "newest" | "oldest" | "longest" | "title";
+
+const sortOptions: Array<{ value: SortKey; label: string }> = [
+  { value: "newest", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "longest", label: "Longest first" },
+  { value: "title", label: "Title A to Z" },
+];
+
+function sortMeetings<T extends { title: string; duration: number; created_at: string }>(
+  list: T[],
+  key: SortKey
+): T[] {
+  const sorted = [...list];
+  switch (key) {
+    case "oldest":
+      sorted.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      break;
+    case "longest":
+      sorted.sort((a, b) => (b.duration || 0) - (a.duration || 0));
+      break;
+    case "title":
+      sorted.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
+      break;
+    case "newest":
+    default:
+      sorted.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  }
+  return sorted;
+}
+
 const platformLabels: Record<string, { label: string; color: string; bg: string }> = {
   google_meet: { label: "Google Meet", color: "#4285F4", bg: "#EBF3FE" },
   zoom: { label: "Zoom", color: "#2D8CFF", bg: "#E8F3FF" },
@@ -78,6 +109,7 @@ export default function DashboardPage() {
   const [now, setNow] = useState(() => Date.now());
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set());
   const [showStarredOnly, setShowStarredOnly] = useState(false);
+  const [sortBy, setSortBy] = useState<SortKey>("newest");
 
   const fetchStars = async () => {
     try {
@@ -224,6 +256,7 @@ export default function DashboardPage() {
         !m.title.toLowerCase().includes(lowerSearch) &&
         !!m.transcript?.toLowerCase().includes(lowerSearch),
     }));
+  const visibleMeetings = sortMeetings(filtered, sortBy);
 
   const totalMinutes = Math.floor(meetings.reduce((s, m) => s + (m.duration || 0), 0) / 60);
   const totalWords = meetings.reduce((s, m) => {
@@ -439,6 +472,21 @@ export default function DashboardPage() {
           <Star className={`w-4 h-4 ${showStarredOnly ? "fill-amber-400 text-amber-400" : ""}`} />
           Starred
         </button>
+        <label className="flex items-center gap-2 text-sm text-slate-500">
+          <span className="hidden sm:inline">Sort</span>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortKey)}
+            aria-label="Sort meetings"
+            className="bg-white border border-slate-200 text-slate-700 text-sm font-medium px-3 py-2.5 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-all"
+          >
+            {sortOptions.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
 
       {/* Meeting list */}
@@ -448,7 +496,7 @@ export default function DashboardPage() {
             <div key={i} className="bg-white rounded-2xl p-4 border border-slate-200/60 animate-pulse h-20" />
           ))}
         </div>
-      ) : filtered.length === 0 ? (
+      ) : visibleMeetings.length === 0 ? (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -481,7 +529,7 @@ export default function DashboardPage() {
         </motion.div>
       ) : (
         <div className="space-y-2">
-          {filtered.map((meeting, i) => {
+          {visibleMeetings.map((meeting, i) => {
             const plt = platformLabels[meeting.platform] || platformLabels.other;
             return (
               <motion.div
