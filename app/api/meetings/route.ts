@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { decrypt } from "@/lib/encryption";
+import { listMeetingsForUser } from "@/lib/meetings/list";
 
 const isDemoMode =
   !process.env.NEXT_PUBLIC_SUPABASE_URL ||
@@ -23,11 +24,7 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data, error } = await supabase
-      .from("meetings")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false });
+    const { data, error } = await listMeetingsForUser(supabase, user.id);
 
     if (error) throw error;
 
