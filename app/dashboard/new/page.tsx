@@ -175,6 +175,7 @@ function NewMeetingPage() {
 
   // Setup state
   const [title, setTitle] = useState("");
+  const [titleError, setTitleError] = useState<string | null>(null);
   const [platform, setPlatform] = useState<typeof PLATFORMS[number]>(PLATFORMS[0]);
   const [meetingTemplate, setMeetingTemplate] = useState<MeetingTemplateId>("general");
   const [currentSpeakerIdx, setCurrentSpeakerIdx] = useState(0);
@@ -401,9 +402,11 @@ function NewMeetingPage() {
   // Start recording
   const startRecording = useCallback(async () => {
     if (!title.trim()) {
+      setTitleError("Please give your meeting a title before starting.");
       toast.error("Please enter a meeting title first");
       return;
     }
+    setTitleError(null);
 
     // ── Remote call mode: capture system audio via screen share ──────────────
     if (recordingMode === "remote") {
@@ -788,11 +791,28 @@ function NewMeetingPage() {
             <input
               type="text"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                if (e.target.value.trim()) setTitleError(null);
+              }}
+              onBlur={() => {
+                if (!title.trim()) setTitleError("Please give your meeting a title before starting.");
+              }}
               placeholder="e.g. Q2 Strategy Review"
-              className="w-full px-4 py-3.5 rounded-2xl border border-slate-200 text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
+              aria-invalid={!!titleError}
+              aria-describedby={titleError ? "meeting-title-error" : undefined}
+              className={`w-full px-4 py-3.5 rounded-2xl border text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 transition-all ${
+                titleError
+                  ? "border-red-300 focus:ring-red-500/40 focus:border-red-400"
+                  : "border-slate-200 focus:ring-indigo-500/50 focus:border-indigo-500"
+              }`}
               onKeyDown={(e) => e.key === "Enter" && startRecording()}
             />
+            {titleError && (
+              <p id="meeting-title-error" className="mt-1.5 text-xs text-red-600">
+                {titleError}
+              </p>
+            )}
           </div>
 
           {/* Platform */}
