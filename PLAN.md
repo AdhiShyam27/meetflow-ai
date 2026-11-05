@@ -89,3 +89,25 @@ Inspiration: **Tactiq** (the three-panel meeting view: transcript, summary, chat
 
 - **Least sure I can build:** the two automated tests with red/green evidence, because the app was built without a test runner and the API routes talk to Supabase directly, so I'll have to pull the query and stat logic into testable functions first.
 - **Cut first if out of time:** sort options beyond newest/oldest, then the Starred view (keeping the star toggle itself), then the weekly chart (keeping the summary stats). The three "mine" features already exist and don't depend on anything new.
+
+## Plan vs. Reality
+
+Written November 4, 2026, after the feature PRs above were merged. The original plan sections are untouched.
+
+| Planned feature | Shipped / Changed / Cut | Status | Learning | What changed and why (one line) |
+|---|---|---|---|---|
+| 1. Sign up and login | Shipped (pre-plan, March 2026) | Done | Supabase Auth handles the hard parts; the signup form still needed inline validation. | Existing feature; only validation messages were added in PR #12. |
+| 2. Data model (users + 2 tables) | Shipped (pre-plan) | Done | `profiles`, `meetings`, `user_notes` already matched the plan because the plan was written from them. | No change; documented in schema.md (PR #5). |
+| 3. CRUD with delete confirmation | Shipped (pre-plan) | Done | Delete used `window.confirm`, which meets the "are you sure?" requirement without extra UI. | No change. |
+| 4. Validation | Changed | Done | Toasts alone are not "a friendly message at the field"; inline helper text was missing everywhere. | PR #12 added inline messages on new meeting, notes and signup; the notes page also gained a write form because it only accepted uploads before. |
+| 5. Stars (junction table + Starred view) | Shipped | Done | Keep a toggle in one POST endpoint so the UI needs a single call; RLS makes the junction table per-user automatically. | PR #8; the migration must be run by hand in Supabase since the project has no migration runner. |
+| 6. Find things (search + sort) | Shipped | Done | Search already existed; sort was a pure helper plus a `<select>`. | PR #14 added Newest, Oldest, Longest, Title A to Z. |
+| 7. Dashboard (chart + stats) | Shipped (pre-plan) | Done | Stats logic lived inline in the API route and was untestable until extracted. | PR #18 moved the arithmetic into `lib/analytics/stats.ts`. |
+| 8. Upload with speaker labels (mine) | Shipped (pre-plan) | Done | Needs the Python backend running; not available on Vercel alone. | No change. |
+| 9. AI workflows (mine) | Shipped (pre-plan) | Done | Integrations need per-user setup in Settings before they work. | No change. |
+| 10. Notes library with search (mine) | Changed | Done | The library existed but only via file upload. | PR #12 added a write-a-note form while adding validation. |
+| Test 1: data isolation | Changed | Done | A fake query builder is enough to test the filter; RLS is a second layer the test does not cover. | PR #13; runner changed from Vitest to Node's built-in `node --test` because the npm registry was unreachable from the build environment. |
+| Test 2: dashboard stat | Changed | Done | Same runner change as Test 1. | PR #18. |
+| Technologies: Vitest | Changed | Done | Zero-dependency `node:test` works with TypeScript on Node 22. | Replaced by `node --test` (see tests above). |
+| Risks and cuts: sort beyond newest/oldest | Shipped | Done | Nothing had to be cut; the retrofit tests were the slow part as predicted. | No cut was needed. |
+| Process: plan merged before features | Changed | Done | The order matters more than the document; a plan written after the fact is a description, not a decision tool. | The app was built March 2 to 18, 2026 with direct commits to `main`; the plan and all PRs date from November 4, 2026. |
