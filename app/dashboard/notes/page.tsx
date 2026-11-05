@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Upload, FileText, X, Loader2, Trash2, StickyNote, FolderOpen,
+  Upload, FileText, Loader2, Trash2, StickyNote, FolderOpen, PenLine,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -21,6 +21,48 @@ export default function NotesPage() {
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Write-a-note form
+  const [noteFilename, setNoteFilename] = useState("");
+  const [noteContent, setNoteContent] = useState("");
+  const [noteErrors, setNoteErrors] = useState<{ filename?: string; content?: string }>({});
+  const [saving, setSaving] = useState(false);
+
+  const validateNote = () => {
+    const next: { filename?: string; content?: string } = {};
+    if (!noteFilename.trim()) next.filename = "Please give this note a filename.";
+    if (!noteContent.trim()) next.content = "Please write something before saving.";
+    setNoteErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
+  const saveNote = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validateNote()) return;
+
+    setSaving(true);
+    try {
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: noteFilename.trim(), content: noteContent }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error ?? "Could not save note");
+        return;
+      }
+      toast.success("Note saved");
+      setNoteFilename("");
+      setNoteContent("");
+      setNoteErrors({});
+      fetchNotes();
+    } catch {
+      toast.error("Could not save note");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   // Fetch notes on mount
   useEffect(() => {
@@ -112,6 +154,85 @@ export default function NotesPage() {
           Upload your markdown notes. They&apos;ll be searched in real time during meetings to suggest talking points.
         </p>
       </div>
+
+      {/* Write a note */}
+      <motion.form
+        onSubmit={saveNote}
+        noValidate
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="mb-6 bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4"
+      >
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600">
+            <PenLine className="w-3.5 h-3.5" />
+          </div>
+          <h2 className="font-semibold text-slate-800 text-sm">Write a note</h2>
+        </div>
+
+        <div>
+          <label htmlFor="note-filename" className="block text-sm font-medium text-slate-700 mb-1.5">
+            Filename
+          </label>
+          <input
+            id="note-filename"
+            type="text"
+            value={noteFilename}
+            onChange={(e) => {
+              setNoteFilename(e.target.value);
+              if (e.target.value.trim()) setNoteErrors((p) => ({ ...p, filename: undefined }));
+            }}
+            placeholder="e.g. weekly-sync.md"
+            aria-invalid={!!noteErrors.filename}
+            aria-describedby={noteErrors.filename ? "note-filename-error" : undefined}
+            className={`w-full px-4 py-2.5 rounded-xl border text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 transition-all ${
+              noteErrors.filename
+                ? "border-red-300 focus:ring-red-500/40 focus:border-red-400"
+                : "border-slate-200 focus:ring-indigo-500/50 focus:border-indigo-500"
+            }`}
+          />
+          {noteErrors.filename && (
+            <p id="note-filename-error" className="mt-1.5 text-xs text-red-600">{noteErrors.filename}</p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="note-content" className="block text-sm font-medium text-slate-700 mb-1.5">
+            Content
+          </label>
+          <textarea
+            id="note-content"
+            rows={5}
+            value={noteContent}
+            onChange={(e) => {
+              setNoteContent(e.target.value);
+              if (e.target.value.trim()) setNoteErrors((p) => ({ ...p, content: undefined }));
+            }}
+            placeholder="Markdown or plain text"
+            aria-invalid={!!noteErrors.content}
+            aria-describedby={noteErrors.content ? "note-content-error" : undefined}
+            className={`w-full px-4 py-2.5 rounded-xl border text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 transition-all resize-y ${
+              noteErrors.content
+                ? "border-red-300 focus:ring-red-500/40 focus:border-red-400"
+                : "border-slate-200 focus:ring-indigo-500/50 focus:border-indigo-500"
+            }`}
+          />
+          {noteErrors.content && (
+            <p id="note-content-error" className="mt-1.5 text-xs text-red-600">{noteErrors.content}</p>
+          )}
+        </div>
+
+        <div className="flex justify-end">
+          <button
+            type="submit"
+            disabled={saving}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold transition-colors disabled:opacity-60"
+          >
+            {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+            {saving ? "Saving..." : "Save note"}
+          </button>
+        </div>
+      </motion.form>
 
       {/* Upload zone */}
       <motion.div

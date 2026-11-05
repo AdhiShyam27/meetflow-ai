@@ -38,12 +38,53 @@ export async function GET() {
   return NextResponse.json({ notes: data ?? [] });
 }
 
-// ── POST /api/notes — upload markdown files ────────────────────────────────
+// ── POST /api/notes — create one note (JSON) or upload markdown files ──────
+//
+// JSON body: { filename: string, content: string }
+//   Both fields are required; blank (after trim) returns 400 with a message.
+// multipart/form-data: files[] (existing upload path)
 
 export async function POST(request: NextRequest) {
   const supabase = await getSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const contentType = request.headers.get("content-type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    let body: { filename?: unknown; content?: unknown };
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const filename = typeof body.filename === "string" ? body.filename.trim() : "";
+    const content = typeof body.content === "string" ? body.content.trim() : "";
+
+    if (!filename && !content) {
+      return NextResponse.json({ error: "Filename and content are required" }, { status: 400 });
+    }
+    if (!filename) {
+      return NextResponse.json({ error: "Filename is required" }, { status: 400 });
+    }
+    if (!content) {
+      return NextResponse.json({ error: "Content is required" }, { status: 400 });
+    }
+    if (content.length > MAX_FILE_SIZE) {
+      return NextResponse.json({ error: "Content exceeds 500KB limit" }, { status: 400 });
+    }
+
+    const { data, error } = await supabase
+      .from("user_notes")
+      .insert({ user_id: user.id, filename, content })
+      .select("id, filename, created_at")
+      .single();
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    return NextResponse.json({ note: data }, { status: 201 });
+  }
 
   const formData = await request.formData();
   const files = formData.getAll("files") as File[];
@@ -62,6 +103,10 @@ export async function POST(request: NextRequest) {
   // Validate files first, then insert in parallel
   const validFiles: { name: string; content: string }[] = [];
   for (const file of files) {
+    if (!file.name?.trim()) {
+      errors.push("A file with no name was skipped: filename is required");
+      continue;
+    }
     if (file.size > MAX_FILE_SIZE) {
       errors.push(`${file.name}: exceeds 500KB limit`);
       continue;

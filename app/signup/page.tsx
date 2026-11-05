@@ -14,18 +14,41 @@ const perks = [
   "10 free meetings per month",
 ];
 
+type FieldErrors = { name?: string; email?: string; password?: string };
+
 export default function SignupPage() {
   const router = useRouter();
   const [form, setForm] = useState({ name: "", email: "", password: "" });
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState<FieldErrors>({});
 
-  const update = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const update = (k: keyof FieldErrors, v: string) => {
+    setForm((f) => ({ ...f, [k]: v }));
+    setErrors((prev) => ({ ...prev, [k]: undefined }));
+  };
+
+  const validate = () => {
+    const next: FieldErrors = {};
+    if (!form.name.trim()) {
+      next.name = "Please enter your name.";
+    }
+    if (!form.email.trim()) {
+      next.email = "Please enter your email address.";
+    }
+    if (!form.password) {
+      next.password = "Please choose a password.";
+    } else if (form.password.length < 8) {
+      next.password = "Password must be at least 8 characters.";
+    }
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (form.password.length < 8) {
-      toast.error("Password must be at least 8 characters");
+    if (!validate()) {
+      toast.error("Please fix the highlighted fields");
       return;
     }
     setLoading(true);
@@ -99,7 +122,7 @@ export default function SignupPage() {
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} noValidate className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">Full name</label>
                 <input
@@ -108,8 +131,17 @@ export default function SignupPage() {
                   value={form.name}
                   onChange={(e) => update("name", e.target.value)}
                   placeholder="Sarah Chen"
-                  className="w-full px-4 py-3 rounded-xl border border-slate-200 text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
+                  aria-invalid={!!errors.name}
+                  aria-describedby={errors.name ? "signup-name-error" : undefined}
+                  className={`w-full px-4 py-3 rounded-xl border text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 transition-all ${
+                    errors.name
+                      ? "border-red-300 focus:ring-red-500/40 focus:border-red-400"
+                      : "border-slate-200 focus:ring-indigo-500/50 focus:border-indigo-500"
+                  }`}
                 />
+                {errors.name && (
+                  <p id="signup-name-error" className="mt-1.5 text-xs text-red-600">{errors.name}</p>
+                )}
               </div>
 
               <div>
@@ -120,8 +152,17 @@ export default function SignupPage() {
                   value={form.email}
                   onChange={(e) => update("email", e.target.value)}
                   placeholder="you@company.com"
-                  className="w-full px-4 py-3 rounded-xl border border-slate-200 text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
+                  aria-invalid={!!errors.email}
+                  aria-describedby={errors.email ? "signup-email-error" : undefined}
+                  className={`w-full px-4 py-3 rounded-xl border text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 transition-all ${
+                    errors.email
+                      ? "border-red-300 focus:ring-red-500/40 focus:border-red-400"
+                      : "border-slate-200 focus:ring-indigo-500/50 focus:border-indigo-500"
+                  }`}
                 />
+                {errors.email && (
+                  <p id="signup-email-error" className="mt-1.5 text-xs text-red-600">{errors.email}</p>
+                )}
               </div>
 
               <div>
@@ -134,7 +175,13 @@ export default function SignupPage() {
                     value={form.password}
                     onChange={(e) => update("password", e.target.value)}
                     placeholder="Min. 8 characters"
-                    className="w-full px-4 py-3 pr-11 rounded-xl border border-slate-200 text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all"
+                    aria-invalid={!!errors.password}
+                    aria-describedby={errors.password ? "signup-password-error" : undefined}
+                    className={`w-full px-4 py-3 pr-11 rounded-xl border text-slate-800 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 transition-all ${
+                      errors.password
+                        ? "border-red-300 focus:ring-red-500/40 focus:border-red-400"
+                        : "border-slate-200 focus:ring-indigo-500/50 focus:border-indigo-500"
+                    }`}
                   />
                   <button
                     type="button"
@@ -144,6 +191,9 @@ export default function SignupPage() {
                     {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
+                {errors.password && (
+                  <p id="signup-password-error" className="mt-1.5 text-xs text-red-600">{errors.password}</p>
+                )}
               </div>
 
               <motion.button
