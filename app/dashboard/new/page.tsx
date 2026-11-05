@@ -891,15 +891,20 @@ function NewMeetingPage() {
               </button>
             </div>
             {recordingMode === "remote" && (
-              <div className="mt-2.5 rounded-xl p-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 leading-relaxed">
-                <strong>How it works:</strong> You&apos;ll share your Zoom/Meet/Teams tab with audio.
-                All voices — yours and remote participants — are captured and automatically identified.
-                <br /><span className="text-amber-500 mt-1 block">Make sure to check &quot;Share tab audio&quot; in the share dialog.</span>
+              <div className="mt-2.5 rounded-xl p-3 text-xs text-amber-800 bg-amber-50 border border-amber-200 leading-relaxed">
+                <p className="font-semibold mb-1.5">4 steps in Chrome (about 20 seconds):</p>
+                <ol className="list-decimal pl-4 space-y-1">
+                  <li>Open your Zoom, Meet or Teams call in another Chrome tab first.</li>
+                  <li>Come back here and click <strong>Start Transcription</strong>.</li>
+                  <li>In the Chrome pop-up, pick the <strong>Chrome Tab</strong> option, then select your meeting tab.</li>
+                  <li>Tick <strong>&quot;Also share tab audio&quot;</strong> (bottom left of the pop-up), then click <strong>Share</strong>.</li>
+                </ol>
+                <p className="mt-1.5 text-amber-700">Everyone on the call is captured, no bot joins. If you forget step 4 you will see &quot;No audio captured&quot;.</p>
               </div>
             )}
             {recordingMode === "inperson" && (
               <p className="mt-2 text-xs text-slate-500">
-                Microphone captures everyone in the room. Works best with multiple people nearby.
+                Uses your microphone to capture everyone in the room. Chrome will ask for mic permission once; click <strong>Allow</strong>. Works best with the laptop near the speakers.
               </p>
             )}
           </div>
