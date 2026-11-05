@@ -18,3 +18,11 @@ followed by a brief listing the three documentation and validation PRs to produc
 2. Read `backend/start.sh`, `backend/requirements.txt` and the header of `backend/main.py` for the start command and ports.
 3. Listed the top-level directories for the repo layout section.
 4. Wrote the README with features, tools table, layout, local setup steps, backend steps, test command and links. Corrected one step after noticing `backend/.env.example` does not exist in the repo.
+
+## Follow-up (same day)
+
+Coordinator correction received after the README merged:
+
+> In the README, the test command is `npm test`, which runs `node --test tests/` (Node's built-in runner, no Vitest).
+
+The agent updated the Testing row of the tools table and the "Run tests" section accordingly, noting that PLAN.md section 5 still names Vitest.
