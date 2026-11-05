@@ -31,7 +31,10 @@ export async function GET() {
     // Decrypt transcripts — handles both encrypted and legacy plaintext rows
     const meetings = (data ?? []).map((m) => ({
       ...m,
-      transcript: m.transcript ? decrypt(m.transcript, user.id) : m.transcript,
+      transcript:
+        typeof m.transcript === "string" && m.transcript.length > 0
+          ? decrypt(m.transcript, user.id)
+          : m.transcript,
     }));
 
     return NextResponse.json({ meetings });
