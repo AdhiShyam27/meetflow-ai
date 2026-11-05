@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic2, Clock, Sparkles, Plus, Search,
   Calendar, ChevronRight, Zap, Trash2,
-  ExternalLink, Radio, FileText,
+  ExternalLink, Radio, FileText, Star,
 } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -76,6 +76,53 @@ export default function DashboardPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [now, setNow] = useState(() => Date.now());
+  const [starredIds, setStarredIds] = useState<Set<string>>(new Set());
+  const [showStarredOnly, setShowStarredOnly] = useState(false);
+
+  const fetchStars = async () => {
+    try {
+      const res = await fetch("/api/stars");
+      if (!res.ok) return;
+      const data = await res.json();
+      setStarredIds(new Set<string>(data.starred || []));
+    } catch {
+      // Stars are non-critical; the list still renders without them
+    }
+  };
+
+  const handleToggleStar = async (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const wasStarred = starredIds.has(id);
+    // Optimistic update
+    setStarredIds((prev) => {
+      const next = new Set(prev);
+      if (wasStarred) next.delete(id); else next.add(id);
+      return next;
+    });
+    try {
+      const res = await fetch("/api/stars", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meeting_id: id }),
+      });
+      if (!res.ok) throw new Error("Star failed");
+      const data = await res.json();
+      setStarredIds((prev) => {
+        const next = new Set(prev);
+        if (data.starred) next.add(id); else next.delete(id);
+        return next;
+      });
+    } catch {
+      // Roll back
+      setStarredIds((prev) => {
+        const next = new Set(prev);
+        if (wasStarred) next.add(id); else next.delete(id);
+        return next;
+      });
+      toast.error("Could not update star");
+    }
+  };
 
   const fetchMeetings = async () => {
     try {
@@ -99,6 +146,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchMeetings();
+    fetchStars();
     fetchCalendar();
 
     // Re-fetch calendar every 60 seconds
@@ -163,6 +211,7 @@ export default function DashboardPage() {
 
   const lowerSearch = search.toLowerCase();
   const filtered = meetings
+    .filter((m) => !showStarredOnly || starredIds.has(m.id))
     .filter(
       (m) =>
         m.title.toLowerCase().includes(lowerSearch) ||
@@ -206,6 +255,12 @@ export default function DashboardPage() {
       value: totalWords > 0 ? `${(totalWords / 1000).toFixed(1)}k` : "0",
       icon: <FileText className="w-4 h-4" />,
       color: "#8B5CF6",
+    },
+    {
+      label: "Starred",
+      value: meetings.filter((m) => starredIds.has(m.id)).length,
+      icon: <Star className="w-4 h-4" />,
+      color: "#F59E0B",
     },
   ];
 
@@ -262,7 +317,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         {stats.map((stat, i) => (
           <motion.div
             key={stat.label}
@@ -370,6 +425,20 @@ export default function DashboardPage() {
             className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-slate-200 text-slate-700 placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-400 transition-all"
           />
         </div>
+        <button
+          type="button"
+          onClick={() => setShowStarredOnly((v) => !v)}
+          aria-pressed={showStarredOnly}
+          className={`flex items-center gap-1.5 text-sm font-medium px-3.5 py-2.5 rounded-xl border transition-colors ${
+            showStarredOnly
+              ? "bg-amber-50 border-amber-300 text-amber-700"
+              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+          }`}
+          title={showStarredOnly ? "Show all meetings" : "Show starred meetings only"}
+        >
+          <Star className={`w-4 h-4 ${showStarredOnly ? "fill-amber-400 text-amber-400" : ""}`} />
+          Starred
+        </button>
       </div>
 
       {/* Meeting list */}
@@ -389,12 +458,20 @@ export default function DashboardPage() {
             <Mic2 className="w-8 h-8 text-indigo-400" />
           </div>
           <h3 className="text-slate-700 font-semibold mb-2">
-            {search ? "No meetings match your search" : "No meetings yet"}
+            {showStarredOnly && !search
+              ? "No starred meetings yet"
+              : search
+              ? "No meetings match your search"
+              : "No meetings yet"}
           </h3>
           <p className="text-slate-400 text-sm mb-5">
-            {search ? "Try a different search term" : "Start your first live transcription session"}
+            {showStarredOnly && !search
+              ? "Click the star on any meeting to pin it here"
+              : search
+              ? "Try a different search term"
+              : "Start your first live transcription session"}
           </p>
-          {!search && (
+          {!search && !showStarredOnly && (
             <Link href="/dashboard/new">
               <button className="bg-amber-500 hover:bg-amber-400 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors">
                 + Start New Meeting
@@ -456,6 +533,21 @@ export default function DashboardPage() {
 
                     {/* Status + actions */}
                     <div className="flex items-center gap-2 flex-shrink-0">
+                      <button
+                        type="button"
+                        className={`p-1 rounded-md transition-colors ${
+                          starredIds.has(meeting.id)
+                            ? "text-amber-400 hover:text-amber-500"
+                            : "text-slate-300 hover:text-amber-400"
+                        }`}
+                        onClick={(e) => handleToggleStar(e, meeting.id)}
+                        aria-pressed={starredIds.has(meeting.id)}
+                        title={starredIds.has(meeting.id) ? "Unstar meeting" : "Star meeting"}
+                      >
+                        <Star
+                          className={`w-4 h-4 ${starredIds.has(meeting.id) ? "fill-amber-400" : ""}`}
+                        />
+                      </button>
                       {meeting.status === "done" && (
                         <span className="text-xs text-teal-600 bg-teal-50 px-2 py-1 rounded-full font-medium">
                           Complete
